@@ -1,7 +1,7 @@
 # Window Configuration
 # WINDOW_TITLE: The exact title of the scrcpy window (visible at the top of the window)
 # To find it: Look at your scrcpy window's title bar, it usually shows your device model
-WINDOW_TITLE = "SM-M315F"
+WINDOW_TITLE = "op"
 WINDOW_WIDTH = 300 * 1.2
 WINDOW_HEIGHT = 650 * 1.2
 
@@ -12,7 +12,7 @@ RED_ICON_MIN_MATCHES = 3
 STATS_RED_ICON_THRESHOLD = 0.94
 SEARCH_INTERVAL = 0.5
 CLICK_DELAY = 0.1
-CYCLE_DELAY = 0.15
+CYCLE_DELAY = 0.1
 
 # Directory Paths
 TEMPLATES_DIR = "templates"
@@ -20,14 +20,14 @@ ASSETS_DIR = "Assets"
 LOGS_DIR = "logs"
 SCREENSHOTS_DIR = "screenshots"
 
-# Debug and Visualization Settings
+# Debug and Visualization Settingsz
 DEBUG = True
 SAVE_SCREENSHOTS = False
 
 # ShowForbiddenArea: Enables a visual overlay showing forbidden zones in red
 # When True, displays red rectangles over areas where the bot won't click
 # Useful for debugging and visualizing the forbidden zones configuration
-ShowForbiddenArea = False
+ShowForbiddenArea = True
 
 # Telegram Bot Configuration
 # TELEGRAM_ENABLED: Master switch to enable/disable all Telegram notifications
@@ -38,7 +38,7 @@ TELEGRAM_ENABLED = False
 # To get one: Message @BotFather on Telegram, use /newbot command
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
 
-# TELEGRAM_CHAT_ID: Your Telegram chat ID to receive messages
+# TELEGRAM_CHAT_ID: Your Telegram chat ID to receive messagesz
 # To get it: Message your bot, then visit: https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 # Look for "chat":{"id": YOUR_CHAT_ID in the response
 TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID_HERE"
@@ -51,7 +51,7 @@ UPGRADE_POS = (320, 726)
 NEW_LEVEL_POS = (40, 726)
 REDICON_CHECK_POS = (60, 704)
 LEVEL_TRANSITION_POS = (183, 561)
-IDLE_CLICK_POS = (2, 390)
+IDLE_CLICK_POS = (10, 390)
 INIT_CLICK_POS = (180, 472)
 STATS_UPGRADE_POS = (270, 304)
 STATS_UPGRADE_BUTTON_POS = (310, 698)
@@ -62,14 +62,14 @@ NEW_LEVEL_BUTTON_POS = (30, 692)
 # Template Matching Settings
 UPGRADE_STATION_THRESHOLD = 0.8
 UPGRADE_STATION_COLOR_CHECK = True
-BOX_THRESHOLD = 0.97
+BOX_THRESHOLD = 0.95
 UNLOCK_THRESHOLD = 0.9
-NEW_LEVEL_THRESHOLD = 0.98
+NEW_LEVEL_THRESHOLD = 0.97
 
 # Bot Behavior Configuration
 RED_ICON_CYCLE_COUNT = 3
 STATS_UPGRADE_CLICK_COUNT = 20
-STATS_UPGRADE_CLICK_DELAY = 0.01
+STATS_UPGRADE_CLICK_DELAY = 0.05
 UPGRADE_HOLD_DURATION = 3.5
 SCROLL_UP_CYCLES = 3
 

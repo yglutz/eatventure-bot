@@ -38,7 +38,8 @@ The bot operates through several intelligent states:
 ## 📋 Requirements
 
 - **Operating System**: Windows 10/11
-- **Python**: 3.8 or higher
+- **Python**: 3.13 (managed by uv)
+- **Package manager**: [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - **Android Device**: Connected via scrcpy
 
 ## 🚀 Installation
@@ -46,7 +47,24 @@ The bot operates through several intelligent states:
 ### Step 1: Install Python Dependencies
 
 ```bash
-pip install -r requirements.txt
+uv sync --locked
+```
+
+Dependencies are managed in `pyproject.toml` and pinned in `uv.lock`.
+uv automatically creates `.venv` using Python 3.13. In your IDE, select
+`.venv\Scripts\python.exe` as the interpreter.
+
+After configuring the bot and starting scrcpy, run:
+
+```powershell
+uv run main.py
+```
+
+To add a dependency, use `uv add <package>`. For pip compatibility,
+regenerate `requirements.txt` after dependency changes:
+
+```powershell
+uv export --locked --format requirements-txt --no-hashes --output-file requirements.txt
 ```
 
 ### Step 2: Install and Configure scrcpy
@@ -341,3 +359,158 @@ Intelligent automation bot for Eatventure mobile game
 ---
 
 Made with ❤️ for game automation enthusiasts
+
+
+## Lernender Screenshot-Agent (Windows / Python 3.13)
+
+Installation: `uv sync`. Ohne Modus startet `uv run python main.py` weiterhin den
+bestehenden Bot; explizit geht auch `uv run python main.py legacy`.
+Alle Mausdruecke laufen jetzt durch `MouseController`. Die Sperrbereiche in
+`config.py` bleiben unveraendert, inklusive ihrer Grenzen und der unteren Flaeche.
+Absolute Koordinaten werden zuerst in Client-Koordinaten umgerechnet. Drag-Pfade
+werden als vollstaendige Liniensegmente geprueft. Fokusverlust, Groessenaenderungen
+und fehlgeschlagene Aufnahmen sperren Eingaben; Halteaktionen werden freigegeben.
+Das Fenster wird auf **360 x 780 Client-Pixel** eingestellt (ohne Titelleiste).
+
+### Kalibrieren und bedienen
+
+1. scrcpy oeffnen, Eatventure anzeigen und `WINDOW_TITLE` in `config.py` pruefen.
+2. `uv run python main.py calibrate` ausfuehren. Den reinen numerischen Gems-Zaehler
+   markieren, mit Enter bestaetigen. Danach sichere Spielbereiche markieren
+   (Enter je Rechteck, Esc beendet). Shop, Waehrungsanzeigen, Kaeufe und Menues
+   muessen ausserhalb dieser Bereiche liegen. Die roten Sperrzonen bleiben bindend.
+3. Den ausgegebenen OCR-Wert mit dem sichtbaren Gems-Stand vergleichen. Bei
+   unbekanntem oder falschem Wert den Ausschnitt neu kalibrieren. Weitere sichere
+   Spielansichten durch erneutes `calibrate` hinzufuegen. Der letzte Aufruf ersetzt
+   Gems-Ausschnitt und Interaktionsbereiche, behaelt aber vorhandene Referenzbilder.
+4. In Live-Modi das Spiel fokussieren und **Z** zum Starten/Pausieren druecken.
+   **P** beendet, auch waehrend einer Halteaktion. Nach bestaetigtem Gems-Rueckgang
+   pausiert der Agent; vor erneutem Z den Zustand pruefen.
+
+Die Freigabe von Ansichten verwendet konservative Bildvergleiche mit den lokal
+kalibrierten Referenzbildern. Unbekannte Ansichten und Ladebilder erlauben nur
+Warten. Animationen, andere Restaurants und neue Dialoge koennen zusaetzliche
+Kalibrierungen noetig machen. Diese Erkennung ist keine allgemeine semantische
+Dialogerkennung: Die Live-Abnahme muss insbesondere unerwartete Dialoge und die
+gewaehlten Interaktionsbereiche pruefen. Der Agent navigiert nicht gezielt zum Shop.
+OCR laeuft ueber RapidOCR/ONNX Runtime auf CPU; die mitgelieferten ONNX-Modelle werden
+nach `models/ocr/` kopiert und anschliessend lokal geladen.
+
+### Demonstrationen und Lernen
+
+```powershell
+# Mindestens zwei getrennte Aufnahmesitzungen sammeln
+uv run python main.py collect --steps 500
+uv run python main.py collect --steps 500
+uv run python main.py pretrain --epochs 10
+uv run python main.py train --resume models/checkpoints --steps 256
+uv run python main.py evaluate --resume models/checkpoints --steps 256
+uv run tensorboard --logdir logs/learning
+```
+
+`collect` nutzt die bestehende Zustandsmaschine ueber dieselbe Eingabeschicht und
+speichert die vier Graustufenbilder vor der Aktion, tatsaechlich ausgefuehrte
+Aktion, Zeitpunkt und Gems-Messung. Nicht passende Aktionen bleiben als Auditdaten
+mit Aktions-ID -1 gespeichert und werden beim Vortraining ausgeschlossen;
+insbesondere sind lange Legacy-Halteaktionen keine Einsekunden-Aktion. Das
+Vortraining teilt vollstaendige Sitzungen in Training/Validierung (80/20), niemals
+zufaellige benachbarte Frames. Daten liegen in komprimierten Einzelportionen unter
+`data/demonstrations/`. Bei 10 GiB Gesamtbudget pausiert die Aufnahme ohne Loeschung.
+Das Budget laesst sich mit `--budget-gb` anpassen.
+
+Das Netz erhaelt `(4, 208, 96)` Graustufenpixel. Die 1299 Aktionen sind Klick und
+Einsekunden-Halten auf einem Raster mit 18 x 36 Positionen, zwei Scrollrichtungen
+und Warten. Das Aktionsfenster betraegt mindestens 1,5 Sekunden; Aufnahme/OCR koennen
+es verlaengern. Verbotene Rasterpunkte werden maskiert, zusaetzlich prueft die
+Eingabeschicht die aktuelle Freigabe unmittelbar vor dem Mausdruck und waehrend
+Halte-/Drag-Aktionen. Neue Erfahrungen stammen im Training ausschliesslich von der
+aktuellen Policy. CPU-Standard: MaskablePPO/CNN, 256 Schritte pro Update, Lernrate
+0,0001, Batchgroesse 64, vier Epochen, Gamma 0,995. `--steps` wird beim Training auf
+vollstaendige 256-Schritt-Rollouts aufgerundet.
+
+Checkpoints werden nach jedem Optimierungsupdate und beim Beenden gespeichert.
+Sie enthalten Policy, Optimierer, Schritt-/Updatezaehler und Aktions-/Konfigurations-
+version. `--resume` akzeptiert eine ZIP-Datei oder das Checkpoint-Verzeichnis.
+`latest.txt` zeigt auf den zuletzt fertig gespeicherten Checkpoint. Ein unterbrochener
+Rollout wird nicht wiederverwendet. Nach Neustart beginnt eine neue Gems-Messbasis.
+`evaluate` verwendet maskierte, deterministische Aktionen ohne Gewichtsaenderungen.
+Nur eigene/vertraute Checkpoints laden.
+
+### Belohnung und Dashboard
+
+Erst drei aufeinanderfolgende OCR-Lesungen mit Konfidenz mindestens 0,95 bestaetigen
+einen Stand. Unlesbare Werte sind unbekannt; Abkuerzungen wie `1.2K`, Trennzeichen
+oder zusaetzlicher Text werden verworfen. Kurze Unterbrechungen behalten die letzte
+Messbasis. Nach manueller Pause, Neustart oder mehr als 60 Sekunden ohne bestaetigten
+Wert beginnt eine neue Basis ohne rueckwirkende Belohnung. Ein bestaetigter Rueckgang
+pausiert zur Pruefung.
+
+Reward: +1 je bestaetigtem neuem Gem, -0,01 je aktiv verstrichener Sekunde, -0,1 je
+blockierter Aktion. Ab der dritten Wiederholung derselben Position mit identischem
+lokalem Bildausschnitt gibt es zusaetzlich -0,02. Das ist eine vermutete Wirkungslosigkeit,
+kein sicher erkannter Spielfehler. Bildaenderungen und Bot-Zaehler geben keine positive
+Belohnung. TensorBoard zeigt Reward-Komponenten, OCR-Verfuegbarkeit, unbekannte
+Messzeit, Ansichtsfreigabe, Gems/min ueber 5/30 Minuten sowie PPO-/Imitationsverluste.
+Gems/min schliesst Ladezeiten und Optimierungszeiten ein; manuelle Z-Pausen werden
+abgezogen. Zeit ohne gueltige Messbasis wird gesondert ausgewiesen. Messwerte sind
+sitzungsbezogen und werden beim Neustart zurueckgesetzt. Verschiedene Restaurants
+sind keine identischen Testbedingungen; technische Funktion beweist keinen dauerhaften
+Leistungsgewinn.
+
+### Verifikation und Live-Abnahme
+
+```powershell
+uv run python -m pytest -q
+uv run python main.py train --simulate --steps 256 --checkpoints models/smoke --logs logs/smoke
+uv run python main.py train --simulate --resume models/smoke --steps 256 --checkpoints models/smoke --logs logs/smoke
+uv run python main.py evaluate --simulate --resume models/smoke --steps 16 --logs logs/smoke
+```
+
+Die Simulation sendet keine Eingaben und prueft die technische Lernpipeline. Tests
+pruefen inklusive Sperrgrenzen, absolute Koordinaten, kontinuierliche Drag-Pfade,
+Freigabe bei Fehlern, direkte Win32-Umgehungen, OCR-Zustandsfolgen, Masken, Budget,
+Vortraining, echte CNN-Gewichtsaenderung, Optimierer-Wiederherstellung und Evaluation.
+Fuer die Live-Abnahme bleiben nach Kalibrierung zwei Demonstrationssitzungen,
+Vortraining, ein Online-Update, Wiederaufnahme und ein Dashboard-Check erforderlich.
+Die automatisierten Tests ersetzen diese Pruefung am tatsaechlichen Spielfenster nicht.
+
+Technische Grundlagen: [MaskablePPO](https://sb3-contrib.readthedocs.io/en/master/modules/ppo_mask.html)
+und [RapidOCR](https://github.com/RapidAI/RapidOCR).
+
+Kalibrierung ohne Auswahlfenster ist mit `--gems-roi X Y W H` und einem oder
+mehreren `--interaction-roi X Y W H` moeglich. Die Rechtecke muessen vorher an einer
+echten Client-Aufnahme geprueft werden. Beispiel fuer den aktuell eingestellten
+Fenstertitel `op` und die hier gepruefte 360x780-Aufnahme:
+
+```powershell
+uv run python main.py calibrate --gems-roi 218 36 60 23 --interaction-roi 65 115 220 475 --interaction-roi 286 280 65 360 --interaction-roi 0 281 12 309
+uv run python main.py calibrate --verify-only
+uv run python main.py collect --start --steps 12 --max-seconds 60
+```
+
+Diese Koordinaten sind keine universelle Voreinstellung fuer andere Layouts.
+Die Kalibrierung wird bei unzuverlaessigem OCR-Ergebnis gesperrt. `--verify-only`
+prueft zehn neue Aufnahmen ohne Spieleingaben und speichert `models/verification.png`.
+Die Erkennung verwendet den bereits ausgeschnittenen Zahlenbereich direkt als
+Textzeile; erneute Textdetektion koennte einzelne Ziffern faelschlich trennen.
+`--start` fokussiert das Spiel und startet sofort; ohne Option bleibt Z erforderlich.
+`--max-seconds` begrenzt die Laufzeit, einschliesslich manueller Pausen; laufende
+Legacy-Zustandsschritte koennen das Ende geringfuegig verzoegern. Bei blockierter
+Aufnahme zeigt die Konsole Fokus-/Ansichtsstatus; `screenshots/last-unsupported.png`
+hilft bei der Diagnose. Waehrend Live-Pruefungen darf kein zweiter Bot parallel
+eingreifen. Die automatische Speicherung beim Beenden ersetzt keine bereits
+vorhandenen Demonstrationsdaten.
+
+Stationen bauen und aufwerten ist die gezielte Quelle neuer Gems. Dafuer begrenzt
+`collect` die Halteaktionen des Demonstrationsbots auf eine Sekunde, passend zum
+Aktionsraum des Netzes. Alte, nicht passende Langhalte-Aufnahmen bleiben weiterhin
+von der Imitation ausgeschlossen. Die haeufigen Idle-/Schliessklicks erhalten beim
+Vortraining Gewicht 0,1; andere Aktionen Gewicht 1. Damit dominieren Hilfsklicks
+die Beispiele weniger stark. Positive Rewards entstehen weiterhin ausschliesslich
+aus bestaetigten Gems-Zaehlerstaenden, nicht schon aus einem Upgrade-Klick.
+
+Z/P reagieren jetzt nur, wenn das Spielfenster den Fokus hat. Schreiben in anderen
+Anwendungen pausiert oder beendet dadurch keinen Lauf. Fokusverlust sperrt weiterhin
+saemtliche Spieleingaben. Haltezeiten werden nach real verstrichener Zeit gemessen,
+einschliesslich der Zeit fuer Sicherheitspruefungen. Abbrueche protokollieren ihren
+Grund (P im Spielfenster, Zeitlimit oder Interrupt).

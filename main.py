@@ -19,6 +19,8 @@ should_exit = False
 def on_press(key):
     global current_match_index, bot_instance, z_pressed, current_matches, should_exit
     try:
+        if not bot_instance or not bot_instance.window_capture.is_window_active():
+            return
         if hasattr(key, 'char'):
             if key.char == 'x':
                 screen_x, screen_y = win32api.GetCursorPos()
@@ -40,12 +42,15 @@ def on_press(key):
                         bot_instance.current_level_start_time = datetime.now()
                         bot_instance.telegram.notify_bot_started()
                     else:
+                        bot_instance.mouse_controller.release()
                         logger.info("[Z pressed] Bot STOPPED")
                         bot_instance.telegram.notify_bot_stopped()
             elif key.char == 'p':
                 logger = logging.getLogger(__name__)
                 logger.info("[P pressed] Exiting program...")
                 should_exit = True
+                if bot_instance:
+                    bot_instance.stop()
     except Exception as e:
         pass
 
@@ -116,10 +121,15 @@ def main():
         listener.stop()
         return 1
     finally:
+        if bot_instance:
+            bot_instance.stop()
         listener.stop()
     
     return 0
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] != "legacy":
+        from learning.cli import main as learning_main
+        sys.exit(learning_main())
     sys.exit(main())

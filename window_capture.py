@@ -21,6 +21,8 @@ class WindowCapture:
         self.target_height = target_height
         self.find_window()
         self.resize_window()
+        self.calibrated_size = self.get_window_rect()[2:]
+        self.last_capture_ok = False
     
     def find_window(self):
         self.hwnd = win32gui.FindWindow(None, self.window_title)
@@ -35,11 +37,14 @@ class WindowCapture:
         rect = win32gui.GetWindowRect(self.hwnd)
         x, y = rect[0], rect[1]
         
+        client = win32gui.GetClientRect(self.hwnd)
+        outer_width = int(self.target_width) + rect[2] - rect[0] - client[2]
+        outer_height = int(self.target_height) + rect[3] - rect[1] - client[3]
         SWP_NOZORDER = 0x0004
         SWP_SHOWWINDOW = 0x0040
         ctypes.windll.user32.SetWindowPos(
             self.hwnd, 0, int(x), int(y), 
-            int(self.target_width), int(self.target_height), 
+            outer_width, outer_height,
             SWP_NOZORDER | SWP_SHOWWINDOW
         )
         logger.info(f"Window resized to {self.target_width}x{self.target_height}")
@@ -54,42 +59,48 @@ class WindowCapture:
         height = rect[3] - rect[1]
         return x, y, width, height
     
+    def input_ready(self):
+        if not self.is_window_active():
+            return False
+        try:
+            self.capture()
+            return self.last_capture_ok
+        except (RuntimeError, OSError):
+            return False
+
     def capture(self, max_y=None):
-        if not self.hwnd:
-            self.find_window()
-        
+        self.last_capture_ok = False
         x, y, width, height = self.get_window_rect()
-        
-        if max_y:
-            height = min(height, max_y)
-        
-        hwndDC = win32gui.GetWindowDC(self.hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-        
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(saveBitMap)
-        
-        result = ctypes.windll.user32.PrintWindow(self.hwnd, saveDC.GetSafeHdc(), 3)
-        
-        bmpinfo = saveBitMap.GetInfo()
-        bmpstr = saveBitMap.GetBitmapBits(True)
-        img = np.frombuffer(bmpstr, dtype=np.uint8)
-        img.shape = (height, width, 4)
-        
-        win32gui.DeleteObject(saveBitMap.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(self.hwnd, hwndDC)
-        
-        img = img[:, :, :3]
-        img = np.ascontiguousarray(img)
-        
-        return img
-    
+        if (width, height) != self.calibrated_size or win32gui.IsIconic(self.hwnd):
+            raise RuntimeError("Client size changed or window minimized; recalibrate")
+        dc = win32gui.GetDC(self.hwnd)
+        source = target = bitmap = None
+        try:
+            source = win32ui.CreateDCFromHandle(dc)
+            target = source.CreateCompatibleDC()
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(source, width, height)
+            target.SelectObject(bitmap)
+            if not ctypes.windll.user32.PrintWindow(self.hwnd, target.GetSafeHdc(), 3):
+                raise RuntimeError("PrintWindow failed")
+            img = np.frombuffer(bitmap.GetBitmapBits(True), dtype=np.uint8).reshape(height, width, 4)
+            img = np.ascontiguousarray(img[:, :, :3])
+            if img.max() == img.min():
+                raise RuntimeError("Empty capture")
+            self.last_capture_ok = True
+            return img[:max_y] if max_y else img
+        finally:
+            if bitmap is not None:
+                win32gui.DeleteObject(bitmap.GetHandle())
+            if target is not None:
+                target.DeleteDC()
+            if source is not None:
+                source.DeleteDC()
+            win32gui.ReleaseDC(self.hwnd, dc)
+
     def is_window_active(self):
-        return win32gui.IsWindow(self.hwnd) if self.hwnd else False
+        return bool(self.hwnd and win32gui.IsWindow(self.hwnd) and
+                    win32gui.GetForegroundWindow() == self.hwnd)
 
 
 class ForbiddenAreaOverlay:

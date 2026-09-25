@@ -28,6 +28,7 @@ class EatventureBot:
         self.register_states()
         self.templates = self.load_templates()
         self.running = False
+        self.mouse_controller.guard = lambda: self.running and self.window_capture.input_ready()
         self.red_icon_cycle_count = 0
         self.red_icons = []
         self.current_red_icon_index = 0
@@ -352,54 +353,9 @@ class EatventureBot:
         return State.OPEN_BOXES
     
     def handle_hold_upgrade_station(self, current_state):
-        import win32api
-        import win32con
-        
         x, y = self.upgrade_station_pos
-        win_x, win_y = self.mouse_controller.get_window_position()
-        screen_x = win_x + x
-        screen_y = win_y + y
-        
-        win32api.SetCursorPos((int(screen_x), int(screen_y)))
-        time.sleep(0.05)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_x, screen_y, 0, 0)
-        logger.info(f"Holding upgrade station...")
-        
-        max_hold_time = 10.0
-        check_interval = 0.2
-        elapsed_time = 0.0
-        consecutive_not_found = 0
-        required_not_found = 2
-        
-        while elapsed_time < max_hold_time:
-            time.sleep(check_interval)
-            elapsed_time += check_interval
-            
-            screenshot = self.window_capture.capture()
-            limited_screenshot = screenshot[:config.MAX_SEARCH_Y, :]
-            
-            if "upgradeStation" in self.templates:
-                template, mask = self.templates["upgradeStation"]
-                found, confidence, found_x, found_y = self.image_matcher.find_template(
-                    limited_screenshot, template, mask=mask,
-                    threshold=config.UPGRADE_STATION_THRESHOLD, template_name="upgradeStation",
-                    check_color=config.UPGRADE_STATION_COLOR_CHECK
-                )
-                
-                if not found:
-                    consecutive_not_found += 1
-                    if consecutive_not_found >= required_not_found:
-                        logger.info(f"Hold released: upgradeStation disappeared ({elapsed_time:.1f}s)")
-                        break
-                else:
-                    consecutive_not_found = 0
-        
-        if elapsed_time >= max_hold_time:
-            logger.info(f"Hold released: max time reached ({elapsed_time:.1f}s)")
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_x, screen_y, 0, 0)
-        
+        self.mouse_controller.hold_at(x, y, duration=config.UPGRADE_HOLD_DURATION)
+
         self.mouse_controller.click(config.IDLE_CLICK_POS[0], config.IDLE_CLICK_POS[1], relative=True)
         time.sleep(0.05)
         
@@ -718,6 +674,7 @@ class EatventureBot:
     
     def stop(self):
         self.running = False
+        self.mouse_controller.release()
         if self.overlay:
             self.overlay.stop()
         logger.info("Bot stopped")

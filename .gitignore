@@ -1,4 +1,6 @@
 # Python
+.venv/
+.venv.backup-*/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -34,3 +36,10 @@ wheels/
 logs/
 screenshots/
 *.log
+
+# Learning artifacts
+models/
+data/
+runs/
+.pytest_cache/
+pytest-cache-files-*/

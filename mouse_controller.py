@@ -1,145 +1,104 @@
+"""The sole Win32 mouse input gateway. All coordinates are client-relative internally."""
+import time
+import threading
+import math
 import win32api
 import win32con
 import win32gui
-import time
-import logging
-import config
-
-logger = logging.getLogger(__name__)
+from safety import forbidden, path_allowed
 
 
 class MouseController:
-    def __init__(self, hwnd, click_delay=0.1):
+    def __init__(self, hwnd, click_delay=0.1, guard=None):
         self.hwnd = hwnd
         self.click_delay = click_delay
-    
+        self.size = win32gui.GetClientRect(hwnd)[2:]
+        self.guard = guard or (lambda: True)
+        self.observer = None
+        self.path_guard = lambda start, end: True
+        self.max_hold_duration = None
+        self.pressed = False
+        self.lock = threading.RLock()
+
     def is_in_forbidden_zone(self, x, y):
-        if (y >= config.FORBIDDEN_CLICK_Y_MIN and 
-            config.FORBIDDEN_CLICK_X_MIN <= x <= config.FORBIDDEN_CLICK_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_CLICK zone")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_1_Y_MIN <= y <= config.FORBIDDEN_ZONE_1_Y_MAX and
-            config.FORBIDDEN_ZONE_1_X_MIN <= x <= config.FORBIDDEN_ZONE_1_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_1")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_2_Y_MIN <= y <= config.FORBIDDEN_ZONE_2_Y_MAX and
-            config.FORBIDDEN_ZONE_2_X_MIN <= x <= config.FORBIDDEN_ZONE_2_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_2")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_3_Y_MIN <= y <= config.FORBIDDEN_ZONE_3_Y_MAX and
-            config.FORBIDDEN_ZONE_3_X_MIN <= x <= config.FORBIDDEN_ZONE_3_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_3")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_4_Y_MIN <= y <= config.FORBIDDEN_ZONE_4_Y_MAX and
-            config.FORBIDDEN_ZONE_4_X_MIN <= x <= config.FORBIDDEN_ZONE_4_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_4")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_5_Y_MIN <= y <= config.FORBIDDEN_ZONE_5_Y_MAX and
-            config.FORBIDDEN_ZONE_5_X_MIN <= x <= config.FORBIDDEN_ZONE_5_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_5")
-            return True
-        
-        return False
-    
+        return forbidden(x, y)
+
     def get_window_position(self):
-        x, y = win32gui.ClientToScreen(self.hwnd, (0, 0))
-        return x, y
-    
+        return win32gui.ClientToScreen(self.hwnd, (0, 0))
+
+    def ready(self):
+        return (win32gui.IsWindow(self.hwnd) and
+                win32gui.GetForegroundWindow() == self.hwnd and
+                win32gui.GetClientRect(self.hwnd)[2:] == self.size and self.guard())
+
+    def release(self):
+        with self.lock:
+            if self.pressed:
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                self.pressed = False
+
+    def _point(self, x, y, relative):
+        return (int(x), int(y)) if relative else win32gui.ScreenToClient(self.hwnd, (int(x), int(y)))
+
     def move_to(self, x, y, relative=True):
-        if relative:
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        win32api.SetCursorPos((int(screen_x), int(screen_y)))
-        logger.info(f"Cursor moved to window position ({x}, {y})")
-    
+        point = self._point(x, y, relative)
+        if self.ready() and path_allowed(point, point, self.size) and not self.pressed:
+            win32api.SetCursorPos(win32gui.ClientToScreen(self.hwnd, point))
+
+    def _perform(self, kind, start, end, duration):
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError('Input duration must be finite and non-negative')
+        if not path_allowed(start, end, self.size) or not self.path_guard(start, end) or not self.ready():
+            return False
+        token = self.observer('before', kind, start, end, duration, None) if self.observer else None
+        origin = self.get_window_position()
+        completed = False
+        executed = False
+        try:
+            with self.lock:
+                if not self.ready() or not self.path_guard(start, end) or origin != self.get_window_position():
+                    return False
+                win32api.SetCursorPos(win32gui.ClientToScreen(self.hwnd, start))
+                if not self.ready():
+                    return False
+                self.pressed = True
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                executed = True
+            started = time.monotonic()
+            while True:
+                with self.lock:
+                    if not self.pressed or not self.ready() or origin != self.get_window_position():
+                        return False
+                    elapsed = time.monotonic() - started
+                    fraction = min(1., elapsed / max(.001, duration))
+                    point = tuple(round(a + (b-a)*fraction) for a,b in zip(start,end))
+                    if not path_allowed(start, point, self.size):
+                        return False
+                    win32api.SetCursorPos(win32gui.ClientToScreen(self.hwnd, point))
+                if elapsed >= duration:
+                    break
+                time.sleep(min(.02, max(0., duration - (time.monotonic()-started))))
+            completed = True
+        finally:
+            self.release()
+            if self.observer:
+                self.observer('after', kind, start, end, duration, (token, completed, executed))
+        time.sleep(self.click_delay)
+        return completed
+
     def click(self, x, y, relative=True):
-        if relative:
-            if self.is_in_forbidden_zone(x, y):
-                return
-            
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        current_pos = win32api.GetCursorPos()
-        
-        win32api.SetCursorPos((screen_x, screen_y))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_x, screen_y, 0, 0)
-        time.sleep(0.02)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_x, screen_y, 0, 0)
-        
-        logger.info(f"Clicked at ({screen_x}, {screen_y})")
-        
-        time.sleep(self.click_delay)
-    
+        p = self._point(x, y, relative)
+        return self._perform('click', p, p, .04)
+
     def double_click(self, x, y, relative=True):
-        self.click(x, y, relative)
-        time.sleep(0.1)
-    
-    def hold_at(self, x, y, duration=2.0, relative=True):
-        if relative:
-            if self.is_in_forbidden_zone(x, y):
-                return
-            
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        win32api.SetCursorPos((int(screen_x), int(screen_y)))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_x, screen_y, 0, 0)
-        logger.info(f"Holding at ({screen_x}, {screen_y}) for {duration}s")
-        time.sleep(duration)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_x, screen_y, 0, 0)
-        
-        time.sleep(self.click_delay)
-    
-    def drag(self, from_x, from_y, to_x, to_y, duration=0.3, relative=True):
-        if relative:
-            win_x, win_y = self.get_window_position()
-            screen_from_x = win_x + from_x
-            screen_from_y = win_y + from_y
-            screen_to_x = win_x + to_x
-            screen_to_y = win_y + to_y
-        else:
-            screen_from_x = from_x
-            screen_from_y = from_y
-            screen_to_x = to_x
-            screen_to_y = to_y
-        
-        win32api.SetCursorPos((int(screen_from_x), int(screen_from_y)))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_from_x, screen_from_y, 0, 0)
-        time.sleep(0.02)
-        
-        steps = 20
-        for i in range(steps + 1):
-            t = i / steps
-            current_x = int(screen_from_x + (screen_to_x - screen_from_x) * t)
-            current_y = int(screen_from_y + (screen_to_y - screen_from_y) * t)
-            win32api.SetCursorPos((current_x, current_y))
-            time.sleep(duration / steps)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_to_x, screen_to_y, 0, 0)
-        logger.info(f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})")
-        time.sleep(self.click_delay)
+        return self.click(x, y, relative) and self.click(x, y, relative)
+
+    def hold_at(self, x, y, duration=2., relative=True):
+        p = self._point(x, y, relative)
+        if self.max_hold_duration is not None:
+            duration = min(duration, self.max_hold_duration)
+        return self._perform('hold', p, p, duration)
+
+    def drag(self, from_x, from_y, to_x, to_y, duration=.3, relative=True):
+        return self._perform('drag', self._point(from_x, from_y, relative),
+                             self._point(to_x, to_y, relative), duration)
