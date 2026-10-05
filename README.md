@@ -11,6 +11,16 @@ commands, operator controls and verification limitations.
 For busy animated gameplay, see [ANIMATED_CALIBRATION.md](ANIMATED_CALIBRATION.md)
 for the explicit, initially disabled animation-profile and supervised approval workflow.
 
+## Legacy browser portal (amd64)
+
+An opt-in, authenticated Docker portal runs the legacy bot with a private
+Xvfb/openbox desktop and scrcpy, with view-only browser images and manual
+calibration approval before Start. Its lightweight image retains Gems OCR but
+loads no trainer. See [LEGACY_PORTAL.md](LEGACY_PORTAL.md) for Bash/PowerShell
+setup, wireless pairing, calibration review, SSH access and verification limits.
+The image supports x86-64 hosts, not Raspberry Pi/ARM; the real-phone workflow
+and original full-game performance remain unverified.
+
 An intelligent automation bot for the Eatventure mobile game using advanced computer vision and state machine architecture. The bot automatically detects on-screen elements, clicks buttons, manages upgrades, and progresses through game levels with Telegram notifications.
 
 ## 🎬 Demo

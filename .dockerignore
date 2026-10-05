@@ -6,6 +6,13 @@
 !pyproject.toml
 !uv.lock
 !requirements.txt
+!README.md
+!portal.py
+!portal_runtime.py
+!supervisor.py
+!portal_supervisor.py
+!scrcpy_supervisor.py
+!x11_capture.py
 !main.py
 !config.py
 !bot.py

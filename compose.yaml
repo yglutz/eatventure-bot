@@ -43,6 +43,43 @@ services:
       - screenshots:/app/screenshots
       - adb-keys:/root/.android
 
+  # Opt-in, amd64-only headless portal. Python supervises Xvfb and scrcpy;
+  # no host display, remote desktop or automatic gameplay startup is provided.
+  # Set a strong PORTAL_PASSWORD (at least 16 characters) at launch; portal.py
+  # rejects an empty/short value. Keep interpolation optional for bot/adb use.
+  # ADB_ALLOWED_HOSTS is an explicit IP allowlist; empty means deny connections.
+  portal:
+    profiles: ["portal"]
+    build:
+      context: .
+      target: legacy
+    image: eatventure-bot:legacy
+    init: true
+    restart: unless-stopped
+    entrypoint: ["uv", "run", "--frozen", "--offline", "--no-default-groups", "--no-sync", "python", "portal.py"]
+    command: ["--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DISPLAY: "${PORTAL_DISPLAY:-:99}"
+      PORTAL_PASSWORD: "${PORTAL_PASSWORD:-}"
+      ADB_ALLOWED_HOSTS: "${ADB_ALLOWED_HOSTS:-}"
+      PORTAL_ALLOWED_HOSTS: "${PORTAL_ALLOWED_HOSTS:-localhost:8080,127.0.0.1:8080,host.docker.internal:8080}"
+      PORTAL_PUBLIC_ORIGIN: "${PORTAL_PUBLIC_ORIGIN:-}"
+    mem_limit: "${PORTAL_MEM_LIMIT:-2g}"
+    cpus: "${PORTAL_CPUS:-1.0}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "${PORTAL_LOG_MAX_SIZE:-10m}"
+        max-file: "${PORTAL_LOG_MAX_FILE:-3}"
+    stop_grace_period: 60s
+    volumes:
+      - models:/app/models
+      - screenshots:/app/screenshots
+      - logs:/app/logs
+      - adb-keys:/root/.android
+
 volumes:
   models:
   data:

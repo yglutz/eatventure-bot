@@ -11,16 +11,22 @@ dependencies = [
     "pywin32>=308; sys_platform == 'win32'",
     "pynput>=1.8,<2; sys_platform == 'win32'",
     "requests>=2.32,<3",
+    "rapidocr-onnxruntime>=1.4,<2",
+    "onnxruntime>=1.20,<2",
+    "python-xlib>=0.33; sys_platform == 'linux'",
+]
+
+[dependency-groups]
+learning = [
     "torch>=2.6,<3",
     "gymnasium>=1.0,<2",
     "sb3-contrib>=2.6,<3",
-    "rapidocr-onnxruntime>=1.4,<2",
-    "onnxruntime>=1.20,<2",
     "tensorboard>=2.19,<3",
-    "pytest>=8,<10",
 ]
+dev = ["pytest>=8,<10"]
 
 [tool.uv]
+default-groups = ["learning", "dev"]
 environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
 
 [tool.uv.sources]

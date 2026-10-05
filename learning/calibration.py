@@ -38,10 +38,14 @@ def _png(path):
 def _source(capture):
     identity = (capture.calibration_identity() if hasattr(capture, 'calibration_identity')
                 else {'backend': 'window'})
-    if not isinstance(identity, dict) or identity.get('backend') not in ('window', 'adb'):
+    if not isinstance(identity, dict) or identity.get('backend') not in ('window', 'adb', 'scrcpy-x11'):
         raise ValueError('Invalid capture source identity')
-    expected = ({'backend', 'serial', 'package', 'native_size'}
-                if identity['backend'] == 'adb' else {'backend'})
+    if identity['backend'] == 'scrcpy-x11':
+        expected = {'backend', 'serial', 'package', 'display_name', 'window_id',
+                    'canonical_size', 'native_size', 'coordinate_system', 'video_size'}
+    else:
+        expected = ({'backend', 'serial', 'package', 'native_size'}
+                    if identity['backend'] == 'adb' else {'backend'})
     if set(identity) != expected:
         raise ValueError('Malformed capture source identity fields')
     if identity['backend'] == 'adb':
@@ -52,6 +56,23 @@ def _source(capture):
         if (not isinstance(size, list) or len(size) != 2 or
                 any(type(v) is not int or v <= 0 for v in size)):
             raise ValueError('ADB source requires captured native size')
+    if identity['backend'] == 'scrcpy-x11':
+        # The capture implementation supplies this pinned identity only after a
+        # successful full capture. Keep every field, especially window_id: a
+        # restarted scrcpy client must not inherit an old calibration.
+        if any(type(identity[k]) is not str or not identity[k].strip()
+               for k in ('backend', 'serial', 'package', 'display_name', 'coordinate_system')):
+            raise ValueError('scrcpy-X11 source requires explicit string identity fields')
+        if type(identity['window_id']) is not int or identity['window_id'] <= 0:
+            raise ValueError('scrcpy-X11 source requires a positive integer window ID')
+        for key in ('canonical_size', 'native_size'):
+            size = identity[key]
+            if (type(size) is not list or len(size) != 2 or
+                    any(type(v) is not int for v in size) or size != list(SIZE)):
+                raise ValueError('scrcpy-X11 source requires captured canonical client size')
+        if (identity['coordinate_system'] != 'canonical-client-pixels' or
+                identity['video_size'] is not None):
+            raise ValueError('scrcpy-X11 source requires canonical client coordinates, not video coordinates')
     # Freeze the identity, reject non-JSON/nonfinite values rather than coercing.
     return json.loads(json.dumps(identity, allow_nan=False))
 

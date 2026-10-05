@@ -10,7 +10,7 @@ permission:
   bash: allow
   task: allow
   todowrite: allow
-  webfetch: allow
+  webfetch: ask
 ---
 
 You are the lead developer of a mobile game AI project.
