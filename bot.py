@@ -3,7 +3,6 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-from window_capture import WindowCapture, ForbiddenAreaOverlay
 from image_matcher import ImageMatcher
 from mouse_controller import MouseController
 from state_machine import StateMachine, State
@@ -14,12 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 class EatventureBot:
-    def __init__(self):
+    def __init__(self, capture=None, mouse=None):
         logger.info("Initializing Eatventure Bot...")
         
-        self.window_capture = WindowCapture(config.WINDOW_TITLE, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+        if capture is None:
+            from window_capture import WindowCapture
+            capture = WindowCapture(config.WINDOW_TITLE, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+        self.window_capture = capture
         self.image_matcher = ImageMatcher(config.MATCH_THRESHOLD)
-        self.mouse_controller = MouseController(
+        self.mouse_controller = mouse or MouseController(
             self.window_capture.hwnd,
             config.CLICK_DELAY
         )
@@ -56,7 +58,8 @@ class EatventureBot:
         self.telegram = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, config.TELEGRAM_ENABLED)
         
         self.overlay = None
-        if config.ShowForbiddenArea:
+        if config.ShowForbiddenArea and hasattr(self.window_capture, 'hwnd'):
+            from window_capture import ForbiddenAreaOverlay
             forbidden_zones = [
                 (config.FORBIDDEN_ZONE_1_X_MIN, config.FORBIDDEN_ZONE_1_X_MAX, 
                  config.FORBIDDEN_ZONE_1_Y_MIN, config.FORBIDDEN_ZONE_1_Y_MAX),

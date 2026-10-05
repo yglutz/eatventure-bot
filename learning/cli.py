@@ -1,5 +1,7 @@
 import argparse
 import time
+import signal
+import math
 from pathlib import Path
 
 from learning.core import Frames, Gems, Recording, map_demo
@@ -85,58 +87,118 @@ def main(argv=None):
     parser.add_argument('--simulate', action='store_true', help='Offline training/evaluation smoke test')
     parser.add_argument('--gems-roi', nargs=4, type=int, metavar=('X','Y','W','H'))
     parser.add_argument('--interaction-roi', nargs=4, type=int, action='append', metavar=('X','Y','W','H'))
-    parser.add_argument('--start', action='store_true', help='Focus game and start immediately; Z/P remain active')
+    parser.add_argument('--start', action='store_true', help='Start immediately (Windows focuses game; ADB requires it already focused)')
     parser.add_argument('--max-seconds', type=float, help='Stop after this wall-clock session duration')
-    parser.add_argument('--verify-only', action='store_true', help='Check existing calibration against ten live captures')
+    parser.add_argument('--verify-only', action='store_true', help='Read-only live calibration verification; defaults to 20 captures')
+    parser.add_argument('--backend', choices=['window', 'adb'], default='window')
+    parser.add_argument('--adb-serial', help='Explicit device serial or WiFi host:port')
+    parser.add_argument('--adb-package', help='Expected foreground Android package')
+    parser.add_argument('--adb-connect', action='store_true', help='Connect the explicit WiFi serial')
+    parser.add_argument('--adb-path', default='adb')
+    parser.add_argument('--adb-timeout', type=float, default=10.)
+    parser.add_argument('--animation-reference', action='append', help='Operator-reviewed normal PNG; repeat 8..32 times, never use holdout/negative frames')
+    parser.add_argument('--animation-roi', nargs=4, type=int, action='append', metavar=('X','Y','W','H'))
+    parser.add_argument('--cash-roi', nargs=4, type=int, metavar=('X','Y','W','H'))
+    parser.add_argument('--negative-reference', action='append', default=[], help='Known unsafe PNG for read-only verification')
+    parser.add_argument('--verification-checks', type=int, default=20)
+    parser.add_argument('--approve-calibration', action='store_true', help='Explicitly approve animation candidate only after live and negative verification')
     args = parser.parse_args(argv)
     if args.steps <= 0 or args.epochs <= 0 or args.budget_gb <= 0:
         parser.error('steps, epochs and budget must be positive')
-    if args.max_seconds is not None and args.max_seconds <= 0:
+    if args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds <= 0):
         parser.error('max-seconds must be positive')
     if args.mode == 'evaluate' and not args.resume:
         parser.error('evaluate requires --resume')
     if args.simulate and args.mode in ('calibrate', 'collect'):
         parser.error('calibrate/collect require a real game window')
+    live_adb = args.backend == 'adb' and not args.simulate and args.mode != 'pretrain'
+    if live_adb and (not args.adb_serial or not args.adb_package):
+        parser.error('ADB requires --adb-serial and --adb-package')
+    if not math.isfinite(args.adb_timeout) or args.adb_timeout <= 0:
+        parser.error('adb-timeout must be finite and positive')
+    if live_adb and args.mode == 'calibrate' and not args.verify_only and (not args.gems_roi or not args.interaction_roi):
+        parser.error('Headless ADB calibration requires --gems-roi and --interaction-roi')
+    if args.approve_calibration and (args.mode != 'calibrate' or not args.verify_only or not args.negative_reference):
+        parser.error('Approval requires calibrate --verify-only and --negative-reference')
+    if args.animation_reference and (args.mode != 'calibrate' or args.verify_only or not args.animation_roi or not args.gems_roi or not args.interaction_roi):
+        parser.error('Animation creation requires calibrate, animation/gems/interaction ROIs, and no --verify-only')
+    if args.animation_reference and not 8 <= len(args.animation_reference) <= 32:
+        parser.error('Animation calibration requires 8..32 operator-approved references')
+    if not 10 <= args.verification_checks <= 1000:
+        parser.error('verification-checks must be 10..1000')
     from learning.environment import Controls, GameEnv, LiveInterface, SimulatedInterface
     from learning.training import create, load_checkpoint, pretrain, save_checkpoint
     from torch.utils.tensorboard import SummaryWriter
     controls = Controls(paused=not (args.simulate or args.start))
     writer = SummaryWriter(str(Path(args.logs) / args.mode / time.strftime('%Y%m%d-%H%M%S')))
     model = env = bot = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    def terminate(signum, frame):
+        controls.stop_reason = 'SIGTERM'
+        controls.stopped = True
+        controls.release()
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, terminate)
     try:
         if args.simulate or args.mode == 'pretrain':
             interface = SimulatedInterface()
             controls = Controls(paused=False)
         else:
             import config
-            from window_capture import WindowCapture
             from mouse_controller import MouseController
             from learning.vision import Vision, calibrate
-            if args.mode == 'collect':
+            if live_adb:
+                from adb_capture import ADBCapture
+                capture = ADBCapture(args.adb_serial, args.adb_package, adb_path=args.adb_path,
+                                     timeout=args.adb_timeout, connect=args.adb_connect)
+                if args.mode == 'calibrate':
+                    # A new connection can briefly display an Android banner.
+                    time.sleep(12)
+                capture.capture()
+                mouse = MouseController(capture=capture)
+                if args.mode == 'collect':
+                    from bot import EatventureBot
+                    bot = EatventureBot(capture=capture, mouse=mouse)
+            elif args.mode == 'collect':
                 from bot import EatventureBot
                 bot = EatventureBot()
                 capture, mouse = bot.window_capture, bot.mouse_controller
             else:
+                from window_capture import WindowCapture
                 capture = WindowCapture(config.WINDOW_TITLE, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
                 mouse = MouseController(capture.hwnd)
+            def load_vision():
+                vision = Vision(args.calibration)
+                source = capture.calibration_identity() if live_adb else {'backend': 'window'}
+                if vision.data.get('source', {'backend': 'window'}) != source:
+                    raise ValueError('Calibration capture source mismatch; recalibrate in a separate directory')
+                return vision
             if args.mode == 'calibrate':
                 if args.verify_only:
-                    import cv2
-                    vision = Vision(args.calibration)
-                    for i in range(10):
-                        image = capture.capture()
-                        print('Calibration check:', vision.supported(image), vision.gems(image), flush=True)
-                        time.sleep(.5)
-                    cv2.imwrite(str(Path(args.calibration).parent/'verification.png'), image)
+                    from learning.calibration import verify_calibration
+                    passed = verify_calibration(capture, args.calibration,
+                                                checks=args.verification_checks,
+                                                negative_paths=args.negative_reference,
+                                                approve=args.approve_calibration)
+                    return 0 if passed else 1
+                elif args.animation_reference:
+                    from learning.calibration import create_animation_calibration
+                    create_animation_calibration(capture, args.calibration, args.animation_reference,
+                                                 args.gems_roi, args.interaction_roi,
+                                                 args.animation_roi, args.cash_roi)
                 else:
                     calibrate(capture, args.calibration, args.gems_roi, args.interaction_roi)
                 return 0
-            interface = LiveInterface(capture, mouse, Vision(args.calibration), controls)
-            controls.start()
-            if args.start:
+            interface = LiveInterface(capture, mouse, load_vision(), controls)
+            if live_adb:
+                controls.start_console()
+            else:
+                controls.start()
+            if args.start and not live_adb:
                 import win32gui
                 win32gui.SetForegroundWindow(capture.hwnd)
-            print('Ready: focus the game, then Z to start/pause; P to exit.', flush=True)
+            print('Ready: keep the game focused; Z to start/pause, P to exit.' +
+                  (' Enter commands followed by Enter; Ctrl+C also stops. ADB: taps only.' if live_adb else ''), flush=True)
         if args.max_seconds:
             controls.deadline = time.monotonic() + args.max_seconds
         if args.mode == 'collect':
@@ -164,6 +226,7 @@ def main(argv=None):
               else 'Stopped; completed recording files are retained.')
         return 0
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         controls.close()
         if model is not None and args.mode in ('train', 'pretrain'):
             path = save_checkpoint(model, args.checkpoints)

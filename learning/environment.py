@@ -54,6 +54,30 @@ class Controls:
         self.listener = keyboard.Listener(on_press=press, on_release=release)
         self.listener.start()
 
+    def command(self, text):
+        """Headless operator controls; no device input or desktop listener."""
+        if text.strip().lower() == 'p':
+            self.stopped = True
+            self.stop_reason = 'operator stop'
+            self.release()
+        elif text.strip().lower() == 'z':
+            if self.paused:
+                self.pause_seconds += time.monotonic() - self.pause_start
+                self.paused, self.pause_start = False, None
+            else:
+                self.pause()
+
+    def start_console(self):
+        import sys
+        import threading
+
+        def read_commands():
+            for line in sys.stdin:
+                self.command(line)
+                if self.stopped:
+                    break
+        threading.Thread(target=read_commands, daemon=True).start()
+
     def active_time(self):
         now = time.monotonic()
         return now - self.pause_seconds - (now-self.pause_start if self.paused else 0)
@@ -86,7 +110,10 @@ class LiveInterface:
 
     def mask(self):
         points = [self.vision.path_supported(p, p) for p in POINTS]
-        return np.array(points*2 + [self.vision.path_supported(a, b) for a,b in SCROLLS] + [True])
+        supports = getattr(self.mouse, 'supports_action', lambda kind: True)
+        return np.array([p and supports('click') for p in points] +
+                        [p and supports('hold') for p in points] +
+                        [self.vision.path_supported(a, b) and supports('drag') for a,b in SCROLLS] + [True])
 
     def ready(self):
         if self.controls.deadline and time.monotonic() >= self.controls.deadline:

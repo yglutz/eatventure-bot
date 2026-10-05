@@ -1,0 +1,47 @@
+# Allowlist application inputs only. Local environments, credentials, ADB keys,
+# recordings, calibration images, OCR caches, checkpoints and logs stay outside.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!requirements.txt
+!main.py
+!config.py
+!bot.py
+!adb_capture.py
+!image_matcher.py
+!mouse_controller.py
+!safety.py
+!state_machine.py
+!telegram_notifier.py
+!window_capture.py
+!learning/
+!learning/**
+!src/
+!src/**
+!templates/
+!templates/**
+!Assets/
+!Assets/**
+
+# Re-exclude generated files in allowlisted source/asset directories.
+**/__pycache__/
+**/*.py[cod]
+**/*.log
+**/.env*
+**/*adbkey*
+**/*.pem
+**/*.key
+**/*.pt
+**/*.pth
+**/*.onnx
+**/calibration*/
+**/recordings/
+**/screenshots/
+**/models/
+**/data/
+**/logs/
+
+# Calibration source is application code, not a generated calibration directory.
+!learning/calibration.py

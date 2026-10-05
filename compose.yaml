@@ -1,0 +1,51 @@
+services:
+  bot:
+    build:
+      context: .
+    image: eatventure-bot:local
+    init: true
+    command: ["train", "--simulate", "--steps", "256", "--checkpoints", "models/smoke"]
+    network_mode: none
+    volumes:
+      - models:/app/models
+      - data:/app/data
+      - logs:/app/logs
+      - screenshots:/app/screenshots
+      - adb-keys:/root/.android
+
+  # Opt-in LAN/WiFi transport; no USB devices, privileged mode or host networking.
+  # Set ADB_SERIAL=IP:PORT and ADB_PACKAGE to the expected game package.
+  adb:
+    profiles: ["adb"]
+    build:
+      context: .
+    image: eatventure-bot:local
+    init: true
+    command:
+      - calibrate
+      - --backend
+      - adb
+      - --adb-serial
+      - "${ADB_SERIAL:-}"
+      - --adb-package
+      - "${ADB_PACKAGE:-}"
+      - --adb-connect
+      - --verify-only
+      - --calibration
+      - models/adb/calibration.json
+    stdin_open: true
+    tty: true
+    stop_grace_period: 60s
+    volumes:
+      - models:/app/models
+      - data:/app/data
+      - logs:/app/logs
+      - screenshots:/app/screenshots
+      - adb-keys:/root/.android
+
+volumes:
+  models:
+  data:
+  logs:
+  screenshots:
+  adb-keys:

@@ -76,6 +76,7 @@ def test_loading_never_reads_ocr_and_failed_capture_blocks():
 def test_noninteractive_calibration_confidence_gate(tmp_path, monkeypatch):
     import learning.vision as module
     capture = Mock()
+    capture.calibration_identity.return_value = {'backend': 'window'}
     capture.capture.return_value = np.ones((780,360,3),np.uint8)
     engine = Mock()
     engine.gems.return_value = (123,.94)

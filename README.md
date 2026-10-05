@@ -1,5 +1,16 @@
 # Eatventure Bot 🎮🤖
 
+## Docker and direct Wi-Fi ADB milestone
+
+The learning CLI now supports `--backend adb`: direct PNG screenshots over ADB,
+without scrcpy or desktop capture. Docker packaging and Linux/Python 3.13 support
+are included. **ADB input is tap-only for this safety checkpoint; holds/drags are
+disabled.** Windows window capture remains the default.
+See [DOCKER_CHECKPOINT.md](DOCKER_CHECKPOINT.md) for setup, calibration, Docker
+commands, operator controls and verification limitations.
+For busy animated gameplay, see [ANIMATED_CALIBRATION.md](ANIMATED_CALIBRATION.md)
+for the explicit, initially disabled animation-profile and supervised approval workflow.
+
 An intelligent automation bot for the Eatventure mobile game using advanced computer vision and state machine architecture. The bot automatically detects on-screen elements, clicks buttons, manages upgrades, and progresses through game levels with Telegram notifications.
 
 ## 🎬 Demo

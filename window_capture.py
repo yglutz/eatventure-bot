@@ -1,7 +1,10 @@
-import win32gui
-import win32ui
-import win32con
-import win32api
+try:
+    import win32gui
+    import win32ui
+    import win32con
+    import win32api
+except ImportError:
+    win32gui = win32ui = win32con = win32api = None
 import ctypes
 import numpy as np
 from PIL import Image
@@ -10,11 +13,14 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-ctypes.windll.shcore.SetProcessDpiAwareness(2)
+if hasattr(ctypes, 'windll'):
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
 
 class WindowCapture:
     def __init__(self, window_title, target_width=800, target_height=600):
+        if win32gui is None:
+            raise RuntimeError('Window capture requires Windows; use --backend adb on Linux')
         self.window_title = window_title
         self.hwnd = None
         self.target_width = target_width

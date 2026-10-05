@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "default_agent": "mobile-ai-lead",
+  "agents": {
+    "ai-architect": ".opencode/agents/ai-architect.md",
+    "computer-vision-engineer": ".opencode/agents/computer-vision-engineer.md",
+    "rl-researcher": ".opencode/agents/rl-researcher.md",
+    "android-controller": ".opencode/agents/android-controller.md",
+    "data-engineer": ".opencode/agents/data-engineer.md",
+    "experiment-manager": ".opencode/agents/experiment-manager.md",
+    "game-analyzer": ".opencode/agents/game-analyzer.md",
+    "mobile-ai-lead": ".opencode/agents/mobile-ai-lead.md"
+  }
+}

@@ -2,11 +2,16 @@ import logging
 from pathlib import Path
 import sys
 import time
+import config
+
+# Dispatch learning commands before importing Windows-only desktop dependencies.
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] != 'legacy':
+    from learning.cli import main as learning_main
+    sys.exit(learning_main())
+
 import win32api
 import win32gui
 from pynput import keyboard
-
-import config
 from bot import EatventureBot
 
 current_match_index = 0
