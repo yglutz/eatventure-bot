@@ -1,5 +1,6 @@
 import logging
 from enum import Enum, auto
+from runtime_metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ class StateMachine:
     def update(self):
         if self.current_state in self.state_handlers:
             handler = self.state_handlers[self.current_state]
-            next_state = handler(self.current_state)
+            with metrics.measure('state', state=self.current_state.name):
+                next_state = handler(self.current_state)
             
             if next_state is not None and isinstance(next_state, State):
                 self.transition(next_state)

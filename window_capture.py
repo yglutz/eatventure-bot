@@ -1,6 +1,8 @@
 """Platform-neutral capture facade; desktop dependencies load on construction."""
 import sys
 
+from runtime_metrics import metrics
+
 
 class WindowCapture:
     def __init__(self, window_title=None, target_width=800, target_height=600, *, backend=None):
@@ -28,6 +30,10 @@ class WindowCapture:
     @property
     def last_capture_rect(self):
         return self.backend.last_capture_rect
+
+    def capture(self, max_y=None):
+        with metrics.measure('capture', max_y=max_y):
+            return self.backend.capture(max_y)
 
     def __getattr__(self, name):
         return getattr(self.backend, name)

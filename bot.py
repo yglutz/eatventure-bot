@@ -785,6 +785,11 @@ class EatventureBot:
                 if self.overlay:
                     self.overlay.stop()
             finally:
-                if self.window_capture is not None:
-                    self.window_capture.close()
+                try:
+                    if self.window_capture is not None:
+                        self.window_capture.close()
+                finally:
+                    telegram = getattr(self, 'telegram', None)
+                    if telegram is not None:
+                        telegram.close()
         logger.info("Bot stopped")

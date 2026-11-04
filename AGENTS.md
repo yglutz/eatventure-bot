@@ -8,7 +8,7 @@ without explicit authorization.
 
 | Area | Files | OpenCode agent |
 | --- | --- | --- |
-| Runtime and detection | `image_matcher.py`, `window_capture.py`, `windows_backend.py`, `x11_backend.py`, timing in `main.py`, `tests/test_platform_capture.py` | `bot-runtime` |
+| Runtime and detection | `image_matcher.py`, `window_capture.py`, `runtime_metrics.py`, `tests/test_runtime_metrics.py`, `tests/test_image_matcher.py`, `windows_backend.py`, `x11_backend.py`, timing in `main.py`, `tests/test_platform_capture.py` | `bot-runtime` |
 | Action flow and state | `bot.py`, `state_machine.py`, `tests/test_portable_integration.py` | `bot-actions` |
 | Input protection | `mouse_controller.py`, safety checks in `bot.py`, backend input/validation, overlay in `windows_backend.py`, `tests/test_mouse_controller.py` | `bot-safety` |
 | Python environment | `pyproject.toml`, `uv.lock`, `requirements.txt` (compatibility mirror) | Coordinator with `bot-runtime` |
@@ -16,7 +16,7 @@ without explicit authorization.
 | Experimental Android input (disabled by default) | `adb_input.py`, input transport in `adb_backend.py`, `tests/test_adb_input.py` | `bot-safety` |
 | Terminal controls and shared desktop/terminal command queue | `terminal_controls.py`, `tests/test_terminal_controls.py`, integration in `main.py` | `bot-actions` |
 | Gameplay decisions and upgrade exclusions | `bot.py`, `config.py`, recognition assets in `Assets/` | `bot-strategy` |
-| Controls, settings, notifications | `main.py`, `config.py`, `telegram_notifier.py`, `get_chat_id.py` | Coordinate by task |
+| Controls, settings, notifications | `main.py`, `config.py`, `telegram_notifier.py`, `tests/test_telegram_notifier.py`, `get_chat_id.py` | Coordinate by task |
 | Agent definitions and usage | `.opencode/agents/`, `.opencode/README.md` | `bot-improvements` |
 | Project OpenCode settings and agent permissions | `opencode.json` | `bot-improvements` |
 | Per-agent permission matrix | `docs/opencode-permissions.md` | `bot-improvements` (update alongside permission changes) |
