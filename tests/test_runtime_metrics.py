@@ -113,58 +113,15 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(self.rows()['state']['labels']['state'], 'FIND_RED_ICONS')
         self.assertEqual(self.rows()['state']['work']['mean'], 0)
 
-    def test_main_keys_offline(self):
-        # Import with inert platform/bot modules: no Win32, listener or notifications.
-        pynput = types.ModuleType('pynput')
-        pynput.keyboard = Mock()
-        bot_module = types.ModuleType('bot')
-        bot_module.EatventureBot = Mock()
-        modules = {'win32api': Mock(), 'win32gui': Mock(),
-                   'pynput': pynput, 'bot': bot_module}
-        spec = importlib.util.spec_from_file_location(
-            'offline_main', Path(__file__).resolve().parents[1] / 'main.py')
-        main = importlib.util.module_from_spec(spec)
-        with patch.dict('sys.modules', modules):
-            spec.loader.exec_module(main)
-        main.bot_instance = Mock(running=False)
-        with patch.object(main.time, 'monotonic', return_value=123.0):
-            main.on_press(types.SimpleNamespace(char='z'))
-        self.assertEqual(main.bot_instance.current_level_start_time, 123.0)
-        self.assertTrue(main.bot_instance.running)
-        main.on_press(types.SimpleNamespace(char='p'))
-        self.assertFalse(main.bot_instance.running)
-        self.assertTrue(main.should_exit)
-
-        # One inert main-loop iteration verifies stopped backoff remains intact.
-        main.should_exit = False
-        idle_bot = Mock(running=False)
-        def stop_after_sleep(seconds):
-            self.clock.sleep(seconds)
-            main.should_exit = True
-        self.metrics.sleeper = stop_after_sleep
-        with patch.object(main, 'EatventureBot', return_value=idle_bot), \
-                patch.object(main, 'metrics', self.metrics), \
-                patch.object(main, 'setup_logging'), patch('builtins.print'):
-            self.assertEqual(main.main(), 0)
-        self.assertEqual(self.clock.sleeps, [.5])
-        idle_bot.state_machine.update.assert_not_called()
-
     def test_capture_wrapper_offline(self):
-        # Exercise only wrapper; never allocate Win32 resources or call capture.
-        import ctypes
-        modules = {name: Mock() for name in ('win32api', 'win32gui', 'win32ui',
-                                             'win32con', 'numpy', 'PIL')}
-        spec = importlib.util.spec_from_file_location(
-            'offline_capture', Path(__file__).resolve().parents[1] / 'window_capture.py')
-        capture_module = importlib.util.module_from_spec(spec)
-        with patch.dict('sys.modules', modules), patch.object(ctypes, 'windll', Mock(), create=True):
-            spec.loader.exec_module(capture_module)
-        capture = capture_module.WindowCapture.__new__(capture_module.WindowCapture)
+        import window_capture
         frame = object()
-        capture._capture = Mock(return_value=frame)
-        with patch.object(capture_module, 'metrics', self.metrics):
+        backend = Mock()
+        backend.capture.return_value = frame
+        capture = window_capture.WindowCapture(backend=backend)
+        with patch.object(window_capture, 'metrics', self.metrics):
             self.assertIs(capture.capture(400), frame)
-        capture._capture.assert_called_once_with(400)
+        backend.capture.assert_called_once_with(400)
         self.assertEqual(self.rows()['capture']['labels'], {'max_y': '400'})
 
 

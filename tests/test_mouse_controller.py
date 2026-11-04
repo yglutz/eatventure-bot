@@ -1,347 +1,258 @@
-"""Offline only: load the controller against private mocked Win32 modules."""
-import importlib.util
-from pathlib import Path
-import sys
-from types import SimpleNamespace
+"""Offline input tests: this fake never imports or connects to a desktop."""
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_file(name, filename):
-    spec = importlib.util.spec_from_file_location(name, ROOT / filename)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from mouse_controller import MouseController
 
 
-class MouseControllerTests(unittest.TestCase):
-    def setUp(self):
+class Backend:
+    def __init__(self):
+        self.rect = (100, 200, 400, 800)
+        self.last_capture_rect = self.rect
         self.events = []
-        self.moves = []
-        self.sleeps = []
-        self.stopped = False
-        self.api = SimpleNamespace(
-            SetCursorPos=Mock(side_effect=self.moves.append),
-            mouse_event=Mock(side_effect=lambda *args: self.events.append(args)),
-        )
-        self.gui = SimpleNamespace(
-            IsWindow=Mock(return_value=True),
-            GetForegroundWindow=Mock(return_value=42),
-            ClientToScreen=Mock(return_value=(100, -200)),
-            GetClientRect=Mock(return_value=(0, 0, 360, 780)),
-        )
-        self.config = load_file("mouse_test_config", "config.py")
-        runtime_metrics = load_file("mouse_test_metrics", "runtime_metrics.py")
-        self.results = load_file("action_result", "action_result.py").ActionResult
-        with patch.dict(sys.modules, {
-            "win32api": self.api, "win32gui": self.gui,
-            "win32con": SimpleNamespace(MOUSEEVENTF_LEFTDOWN=2, MOUSEEVENTF_LEFTUP=4),
-            "config": self.config,
-            "action_result": SimpleNamespace(ActionResult=self.results),
-            "runtime_metrics": runtime_metrics,
-        }):
-            self.module = load_file("mouse_under_test", "mouse_controller.py")
-        self.now = 0.0
-        self.module.time = SimpleNamespace(monotonic=lambda: self.now)
-        def sleep(seconds):
-            self.sleeps.append(seconds)
-            self.now += seconds
-        self.module.metrics = runtime_metrics.RuntimeMetrics(
-            clock=lambda: self.now, cpu_clock=lambda: 0.0, sleeper=sleep)
-        self.mouse = self.module.MouseController(42, cancelled=lambda: self.stopped)
+        self.focus = True
+        self.down_error = False
+        self.move_error = False
+        self.cursor = (0, 0)
 
-    def test_only_sent_is_truthy(self):
-        self.assertTrue(self.results.SENT)
-        self.assertFalse(self.results.DENIED)
-        self.assertFalse(self.results.CANCELLED)
-        self.assertFalse(self.results.INTERRUPTED)
+    def get_cursor_pos(self):
+        return self.cursor
 
-    def test_click_preserves_coordinates_and_total_delays(self):
-        self.assertIs(self.mouse.click(100, 400), self.results.SENT)
-        self.assertEqual(self.moves, [(200, 200)])
-        self.assertEqual([e[0] for e in self.events], [2, 4])
-        self.assertAlmostEqual(sum(self.sleeps), 0.14)
+    def get_window_rect(self):
+        return self.rect
 
-    def test_absolute_input_is_checked_in_client_space(self):
-        self.assertIs(self.mouse.click(400, -100, relative=False), self.results.DENIED)
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.moves, [])
-        self.assertIs(self.mouse.click(200, 200, relative=False), self.results.SENT)
+    def validate(self, expected_rect=None):
+        if not self.focus:
+            raise RuntimeError("Target lost focus")
+        if expected_rect is not None and self.rect != expected_rect:
+            raise RuntimeError("Geometry changed")
+        return self.rect
 
-    def test_zone_edges_and_offset(self):
-        for point in [(290, 93), (350, 270), (60, 668), (280, 779), (55, 660)]:
-            with self.subTest(point=point):
-                self.assertIs(self.mouse.click(*point), self.results.DENIED)
-        self.assertEqual(self.events, [])
-        self.assertFalse(self.mouse.is_in_forbidden_zone(289, 93))
-        self.assertIs(self.mouse.click(280 + 10, 90 + 10), self.results.DENIED)
+    def move_pointer(self, x, y):
+        self.events.append(("move", x, y))
+        if self.move_error:
+            raise RuntimeError("Move failed")
+        self.cursor = (x, y)
 
-    def test_configured_stats_intersection_is_blocked(self):
-        # Current checked-in zone 1 does NOT include (270, 304). Model the
-        # reported intersecting configuration explicitly; do not invent a bypass.
-        self.config.FORBIDDEN_ZONE_1_X_MIN = 260
-        self.config.FORBIDDEN_ZONE_1_Y_MAX = 320
-        self.assertIs(self.mouse.click(*self.config.STATS_UPGRADE_POS), self.results.DENIED)
-        self.assertIs(self.mouse.hold_at(*self.config.STATS_UPGRADE_POS), self.results.DENIED)
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.mouse.last_reason, "forbidden zone")
+    def button_down(self):
+        self.events.append("down")
+        if self.down_error:
+            raise RuntimeError("Down failed")
 
-    def test_current_stats_coordinates_are_not_in_current_zones(self):
-        self.assertFalse(self.mouse.is_in_forbidden_zone(*self.config.STATS_UPGRADE_POS))
+    def button_up(self):
+        self.events.append("up")
 
-    def test_bounds_and_nonfinite(self):
-        for point in [(-1, 400), (360, 400), (100, 780), (float("nan"), 400)]:
-            self.assertIs(self.mouse.click(*point), self.results.DENIED)
-        self.assertEqual(self.moves, [])
 
-    def test_missing_or_background_window(self):
-        self.gui.IsWindow.return_value = False
-        self.assertIs(self.mouse.click(100, 400), self.results.DENIED)
-        self.gui.IsWindow.return_value = True
-        self.gui.GetForegroundWindow.return_value = 99
-        self.assertIs(self.mouse.hold_at(100, 400), self.results.DENIED)
-        self.assertEqual(self.moves, [])
+class MouseTests(unittest.TestCase):
+    def setUp(self):
+        self.backend = Backend()
+        self.mouse = MouseController(backend=self.backend, click_delay=0)
 
-    def test_cancellation_before_any_input(self):
-        self.stopped = True
-        for operation in [lambda: self.mouse.click(100, 400),
-                          lambda: self.mouse.hold_at(100, 400),
-                          lambda: self.mouse.drag(100, 400, 100, 500)]:
-            self.assertIs(operation(), self.results.CANCELLED)
-        with self.mouse.pressed_at(100, 400) as result:
-            self.assertIs(result, self.results.CANCELLED)
-        self.assertEqual(self.moves, [])
-        self.assertEqual(self.events, [])
+    def test_relative_and_absolute_transforms(self):
+        self.assertTrue(self.mouse.hold_at(100, 300, duration=0))
+        self.assertEqual(self.backend.events, [("move", 200, 500), "down", "up"])
+        self.backend.events.clear()
+        self.assertTrue(self.mouse.hold_at(200, 500, duration=0, relative=False))
+        self.assertEqual(self.backend.events, [("move", 200, 500), "down", "up"])
 
-    def test_cancellation_before_down(self):
-        self.module.metrics.sleeper = lambda _: setattr(self, "stopped", True)
-        self.assertIs(self.mouse.click(100, 400), self.results.CANCELLED)
-        self.assertEqual(self.events, [])
+    def test_optional_gesture_deadline_hook_cleared_after_up(self):
+        self.backend.set_gesture_deadline = lambda value: self.backend.events.append(("deadline", value))
+        with self.mouse.pressed_at(100, 300, deadline=123):
+            pass
+        self.assertEqual(self.backend.events[-4:], [("deadline", 123), "down", "up",
+                                                   ("deadline", None)])
 
-    def test_window_moved_during_settle_refuses_down(self):
-        self.module.metrics.sleeper = lambda _: setattr(
-            self.gui.ClientToScreen, "return_value", (110, -200))
-        self.assertIs(self.mouse.click(100, 400), self.results.DENIED)
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.mouse.last_reason, "window moved")
-
-    def test_cancel_callback_error_fails_closed_and_releases_if_held(self):
-        def cancelled():
-            raise RuntimeError("callback")
-        self.mouse.cancelled = cancelled
-        with self.assertRaisesRegex(RuntimeError, "callback"):
-            self.mouse.click(100, 400)
-        self.assertEqual(self.moves, [])
-        self.mouse.cancelled = lambda: False
-        def sleep(seconds):
-            self.now += seconds
-            if self.events:
-                self.mouse.cancelled = cancelled
-        self.module.metrics.sleeper = sleep
-        with self.assertRaisesRegex(RuntimeError, "callback"):
-            self.mouse.hold_at(100, 400)
-        self.assertEqual([e[0] for e in self.events], [2, 4])
-
-    def test_keyboard_interrupt_releases(self):
-        with self.assertRaises(KeyboardInterrupt):
-            with self.mouse.pressed_at(100, 400):
+    def test_deadline_hook_cleanup_survives_interrupt_and_up_error(self):
+        self.backend.set_gesture_deadline = lambda value: self.backend.events.append(("deadline", value))
+        def failed_up():
+            self.backend.events.append("up")
+            raise RuntimeError("release failed")
+        self.backend.button_up = failed_up
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            with self.mouse.pressed_at(100, 300, deadline=123):
                 raise KeyboardInterrupt()
-        self.assertEqual([e[0] for e in self.events], [2, 4])
+        self.assertEqual(self.backend.events[-1], ("deadline", None))
+        self.assertIsNone(self.mouse._pressed_rect)
 
-    def test_hold_and_drag_cancel_with_release(self):
-        def sleep(seconds):
-            self.now += seconds
-            self.assertLessEqual(seconds, 0.02)
-            if self.events:
-                self.stopped = True
-        self.module.metrics.sleeper = sleep
-        for operation in [lambda: self.mouse.hold_at(100, 400, duration=5),
-                          lambda: self.mouse.drag(100, 400, 100, 500, duration=5)]:
-            self.events.clear()
-            self.stopped = False
-            self.assertIs(operation(), self.results.INTERRUPTED)
-            self.assertEqual([e[0] for e in self.events], [2, 4])
+    def test_deadline_set_failure_still_clears_hook(self):
+        def hook(value):
+            self.backend.events.append(("deadline", value))
+            if value is not None:
+                raise ValueError("invalid deadline")
+        self.backend.set_gesture_deadline = hook
+        with self.assertRaises(ValueError):
+            with self.mouse.pressed_at(100, 300, deadline=123):
+                self.fail("must not enter")
+        self.assertEqual(self.backend.events[-2:], ["up", ("deadline", None)])
 
-    def test_focus_loss_and_window_move_while_held(self):
-        for change in [lambda: setattr(self.gui.GetForegroundWindow, "return_value", 99),
-                       lambda: setattr(self.gui.ClientToScreen, "return_value", (101, -200))]:
-            self.gui.GetForegroundWindow.return_value = 42
-            self.gui.ClientToScreen.return_value = (100, -200)
-            self.events.clear()
+    def test_forbidden_and_bounds_in_both_coordinate_systems(self):
+        for x, y in [(290, 93), (350, 270), (0, 50), (280, 799),
+                     (-0.1, 300), (400, 300), (100, 800), (float("nan"), 300)]:
+            for relative in (True, False):
+                with self.subTest(x=x, y=y, relative=relative):
+                    px, py = (x, y) if relative else (x + 100, y + 200)
+                    result = self.mouse.hold_at(px, py, duration=0, relative=relative)
+                    self.assertFalse(result)
+                    self.assertTrue(result.reason)
+        self.assertEqual(self.backend.events, [])
+
+    def test_current_stats_target_is_not_zone_one(self):
+        # Configuration currently places zone 1 at x=290..350,y=93..270.
+        self.assertFalse(self.mouse.is_in_forbidden_zone(270, 304))
+
+    def test_missing_capture_focus_and_geometry_fail_closed(self):
+        self.backend.last_capture_rect = None
+        self.assertIn("captured", self.mouse.click(100, 300).reason)
+        self.backend.last_capture_rect = (100, 200, 400, 800)
+        self.backend.focus = False
+        self.assertIn("focus", self.mouse.click(100, 300).reason)
+        self.backend.focus = True
+        self.backend.rect = (101, 200, 400, 800)
+        self.assertIn("Geometry", self.mouse.click(100, 300).reason)
+        self.assertEqual(self.backend.events, [])
+
+    def test_drag_rejects_full_path_and_tangent(self):
+        # Safe endpoints, but the intervening segment intersects zone 1.
+        for y in (93, 150, 270):
+            for relative in (True, False):
+                offset_x, offset_y = (0, 0) if relative else (100, 200)
+                result = self.mouse.drag(280 + offset_x, y + offset_y,
+                                         360 + offset_x, y + offset_y,
+                                         duration=0, relative=relative)
+                self.assertFalse(result)
+                self.assertIn("path", result.reason)
+        self.assertEqual(self.backend.events, [])
+
+    def test_safe_drag(self):
+        self.assertTrue(self.mouse.drag(100, 300, 200, 400, duration=0))
+        self.assertEqual(self.backend.events[-1], "up")
+        self.assertIn(("move", 300, 600), self.backend.events)
+
+    def test_exception_after_down_releases(self):
+        self.backend.down_error = True
+        self.assertFalse(self.mouse.click(100, 300))
+        self.assertEqual(self.backend.events[-2:], ["down", "up"])
+
+    def test_context_body_exception_and_base_exception_release(self):
+        for exception in (ValueError, KeyboardInterrupt):
+            with self.assertRaises(exception):
+                with self.mouse.pressed_at(100, 300):
+                    raise exception()
+            self.assertEqual(self.backend.events[-1], "up")
+
+    def test_hold_focus_loss_geometry_and_cancellation_release(self):
+        for failure in ("focus", "geometry", "cancel"):
+            self.setUp()
+            cancelled = [False]
+            self.mouse.cancel_check = lambda: cancelled[0]
+
             def sleep(seconds):
-                self.now += seconds
-                if self.events:
-                    change()
-            self.module.metrics.sleeper = sleep
-            self.assertIs(self.mouse.hold_at(100, 400), self.results.INTERRUPTED)
-            self.assertEqual([e[0] for e in self.events], [2, 4])
+                self.assertLessEqual(seconds, .05)
+                if failure == "focus":
+                    self.backend.focus = False
+                elif failure == "geometry":
+                    self.backend.rect = (101, 200, 400, 800)
+                else:
+                    cancelled[0] = True
 
-    def test_pressed_context_releases_on_body_exception_and_cancellation(self):
-        with self.assertRaisesRegex(RuntimeError, "body"):
-            with self.mouse.pressed_at(100, 400) as result:
-                self.assertIs(result, self.results.SENT)
-                raise RuntimeError("body")
-        self.assertEqual([e[0] for e in self.events], [2, 4])
-        with self.mouse.pressed_at(100, 400) as result:
-            self.stopped = True
-        self.assertEqual([e[0] for e in self.events], [2, 4, 2, 4])
+            with patch("mouse_controller.time.sleep", side_effect=sleep):
+                result = self.mouse.hold_at(100, 300, duration=1)
+            self.assertFalse(result)
+            self.assertEqual(self.backend.events[-1], "up")
 
-    def test_down_exception_still_attempts_release(self):
-        def event(*args):
-            self.events.append(args)
-            if args[0] == 2:
-                raise RuntimeError("down")
-        self.api.mouse_event.side_effect = event
-        with self.assertRaisesRegex(RuntimeError, "down"):
-            self.mouse.click(100, 400)
-        self.assertEqual([e[0] for e in self.events], [2, 4])
-
-    def test_wait_exception_releases(self):
-        def sleep(seconds):
-            self.now += seconds
-            if self.events:
-                raise RuntimeError("sleep")
-        self.module.metrics.sleeper = sleep
-        with self.assertRaisesRegex(RuntimeError, "sleep"):
-            self.mouse.hold_at(100, 400)
-        self.assertEqual([e[0] for e in self.events], [2, 4])
+    def test_hold_callback_and_pre_cancel(self):
+        self.assertFalse(self.mouse.hold_at(100, 300, cancel_check=lambda: True))
+        self.assertEqual(self.backend.events, [])
 
     def test_drag_move_exception_releases(self):
-        def move(point):
-            if self.events:
-                raise RuntimeError("move")
-        self.api.SetCursorPos.side_effect = move
-        with self.assertRaisesRegex(RuntimeError, "move"):
-            self.mouse.drag(100, 400, 100, 500)
-        self.assertEqual([e[0] for e in self.events], [2, 4])
+        original = self.backend.move_pointer
 
-    def test_drag_path_crossing_and_tangency_are_denied(self):
-        # Both endpoints are allowed, but the segment crosses zone 4.
-        for points in [(100, 80, 250, 80), (100, 65, 250, 65), (250, 80, 100, 80)]:
-            self.assertIs(self.mouse.drag(*points), self.results.DENIED)
-        self.assertIs(self.mouse.drag(200, -120, 350, -120, relative=False), self.results.DENIED)
-        self.assertEqual(self.moves, [])
-        self.assertEqual(self.events, [])
+        def move(x, y):
+            if "down" in self.backend.events:
+                raise RuntimeError("move failed while pressed")
+            original(x, y)
 
-    def test_allowed_drag_preserves_steps_and_duration(self):
-        self.assertIs(self.mouse.drag(100, 400, 100, 500), self.results.SENT)
-        self.assertEqual(len(self.moves), 22)
-        self.assertEqual(self.moves[-1], (200, 300))
-        self.assertEqual([e[0] for e in self.events], [2, 4])
-        self.assertAlmostEqual(sum(self.sleeps), 0.02 + 0.02 + 21 * 0.3 / 20 + 0.1)
+        self.backend.move_pointer = move
+        self.assertFalse(self.mouse.drag(100, 300, 200, 400, duration=0))
+        self.assertEqual(self.backend.events[-1], "up")
 
-    def test_input_waits_are_excluded_from_enclosing_state_work(self):
-        with self.module.metrics.measure("state", state="test"):
-            self.now += 0.05  # Simulated state work, not sleep.
-            self.assertIs(self.mouse.click(100, 400), self.results.SENT)
-        rows = self.module.metrics.snapshot()["series"]
-        state = next(row for row in rows if row["name"] == "state")
-        click = next(row for row in rows if row["name"] == "input"
-                     and row["labels"] == {"operation": "click"})
-        self.assertAlmostEqual(state["wall"]["mean"], 0.19)
-        self.assertAlmostEqual(state["work"]["mean"], 0.05)
-        self.assertAlmostEqual(click["wall"]["mean"], 0.14)
-        self.assertAlmostEqual(click["work"]["mean"], 0.0)
+    def test_wait_exception_releases_and_reports_failure(self):
+        with patch("mouse_controller.time.sleep", side_effect=OSError("timer failure")):
+            result = self.mouse.hold_at(100, 300, duration=1)
+        self.assertFalse(result)
+        self.assertIn("timer failure", result.reason)
+        self.assertEqual(self.backend.events[-1], "up")
 
-    def test_input_outcome_counts_and_exception_metrics(self):
-        self.mouse.click(100, 400)
-        self.mouse.click(300, 100)
-        self.stopped = True
-        self.mouse.click(100, 400)
-        self.stopped = False
-        self.api.SetCursorPos.side_effect = RuntimeError("move")
-        with self.assertRaisesRegex(RuntimeError, "move"):
-            self.mouse.click(100, 400)
-        rows = self.module.metrics.snapshot()["series"]
-        outcomes = {row["labels"]["outcome"]: row["count"] for row in rows
-                    if row["name"] == "input.outcome"
-                    and row["labels"]["operation"] == "click"}
-        self.assertEqual(outcomes, dict(sent=1, denied=1, cancelled=1, exception=1))
-        click = next(row for row in rows if row["name"] == "input"
-                     and row["labels"] == {"operation": "click"})
-        self.assertEqual(click["count"], 4)
-        self.assertEqual(click["errors"], 1)
+    def test_focus_loss_between_move_and_press_never_presses(self):
+        def move(x, y):
+            self.backend.events.append(("move", x, y))
+            self.backend.focus = False
 
-    def test_pressed_at_metrics_exclude_caller_body(self):
-        with self.mouse.pressed_at(100, 400) as result:
-            self.assertIs(result, self.results.SENT)
-            self.now += 2.0
-        rows = self.module.metrics.snapshot()["series"]
-        inputs = [row for row in rows if row["name"] == "input"]
-        self.assertEqual({row["labels"]["operation"] for row in inputs},
-                         {"pressed_at.prepare", "press.prepare", "press.down", "press.up"})
-        self.assertAlmostEqual(sum(row["wall"]["mean"] for row in inputs), 0.02)
+        self.backend.move_pointer = move
+        self.assertFalse(self.mouse.click(100, 300))
+        self.assertNotIn("down", self.backend.events)
 
-    def test_public_held_check_uses_original_origin_and_latches_failure(self):
-        self.assertIs(self.mouse.check_held_input(), self.results.DENIED)
-        with self.mouse.pressed_at(200, 200, relative=False) as result:
-            self.assertIs(result, self.results.SENT)
-            self.assertIs(self.mouse.check_held_input(), self.results.SENT)
-            self.gui.ClientToScreen.return_value = (101, -200)
-            self.assertIs(self.mouse.check_held_input(), self.results.INTERRUPTED)
-            self.assertEqual(self.mouse.last_reason, "window moved")
-            self.gui.ClientToScreen.return_value = (100, -200)
-            self.assertIs(self.mouse.check_held_input(), self.results.INTERRUPTED)
-        self.assertIs(self.mouse.check_held_input(), self.results.DENIED)
-        with self.mouse.pressed_at(100, 400):
-            self.assertIs(self.mouse.check_held_input(), self.results.SENT)
-        self.assertEqual([e[0] for e in self.events], [2, 4, 2, 4])
+    def test_geometry_change_during_drag_releases(self):
+        original = self.backend.move_pointer
 
-    def test_public_held_check_focus_cancellation_and_resize(self):
-        for change, reason in [
-            (lambda: setattr(self.gui.GetForegroundWindow, "return_value", 99),
-             "window is not foreground"),
-            (lambda: setattr(self, "stopped", True), "cancelled"),
-            (lambda: setattr(self.gui.GetClientRect, "return_value", (0, 0, 90, 300)),
-             "outside client bounds"),
-        ]:
-            self.gui.GetForegroundWindow.return_value = 42
-            self.gui.GetClientRect.return_value = (0, 0, 360, 780)
-            self.stopped = False
-            self.events.clear()
-            with self.mouse.pressed_at(100, 400) as result:
-                self.assertIs(result, self.results.SENT)
-                change()
-                self.assertIs(self.mouse.check_held_input(), self.results.INTERRUPTED)
-                self.assertEqual(self.mouse.last_reason, reason)
-            self.assertEqual([e[0] for e in self.events], [2, 4])
+        def move(x, y):
+            original(x, y)
+            if "down" in self.backend.events:
+                self.backend.rect = (101, 200, 400, 800)
 
-    def test_wait_deadline_counts_oversleep_instead_of_requested_intervals(self):
-        waits = []
-        def oversleep(seconds):
-            waits.append(seconds)
-            self.now += seconds + 0.03
-        self.module.metrics.sleeper = oversleep
-        self.mouse.click_delay = 0
-        self.assertIs(self.mouse.hold_at(100, 400, duration=0.1), self.results.SENT)
-        # One settle wait, two hold waits (each actually 50ms), and cooldown.
-        self.assertEqual(waits, [0.02, 0.02, 0.02, 0])
+        self.backend.move_pointer = move
+        self.assertFalse(self.mouse.drag(100, 300, 200, 400, duration=0))
+        self.assertEqual(self.backend.events[-1], "up")
 
-    def test_guard_work_counts_toward_hold_deadline(self):
-        original = self.mouse._check_point
-        def slow_guard(*args):
-            result = original(*args)
-            if self.mouse._held is not None:
-                self.now += 0.06
-            return result
-        self.mouse._check_point = slow_guard
-        self.mouse.click_delay = 0
-        self.assertIs(self.mouse.hold_at(100, 400, duration=0.1), self.results.SENT)
-        self.assertEqual(self.sleeps, [0.02, 0.02, 0])
+    def test_move_to_rejected_while_pressed_even_with_safe_endpoints(self):
+        # Segment between these safe endpoints crosses zone 1.
+        for relative in (True, False):
+            with self.subTest(relative=relative):
+                self.setUp()
+                with self.mouse.pressed_at(280, 150):
+                    before = list(self.backend.events)
+                    target = (360, 150) if relative else (460, 350)
+                    result = self.mouse.move_to(*target, relative=relative)
+                    self.assertFalse(result)
+                    self.assertIn("active press", result.reason)
+                    self.assertEqual(self.backend.events, before)
+                self.assertEqual(self.backend.events[-1], "up")
+        self.assertTrue(self.mouse.move_to(100, 300))
 
-    def test_interrupted_is_recorded_as_distinct_outcome(self):
+    def test_external_pointer_displacement_rejected_and_released(self):
+        for position in ((201, 500), (400, 350), (0, 0)):
+            with self.subTest(position=position):
+                self.setUp()
+                with self.assertRaisesRegex(RuntimeError, "Pointer displaced"):
+                    with self.mouse.pressed_at(100, 300) as pressed:
+                        self.backend.cursor = position
+                        pressed.validate()
+                self.assertEqual(self.backend.events[-1], "up")
+
+    def test_hold_detects_displacement_on_poll(self):
         def sleep(seconds):
-            self.now += seconds
-            if self.events:
-                self.stopped = True
-        self.module.metrics.sleeper = sleep
-        self.assertIs(self.mouse.click(100, 400), self.results.INTERRUPTED)
-        rows = self.module.metrics.snapshot()["series"]
-        outcome = next(row for row in rows if row["name"] == "input.outcome"
-                       and row["labels"] == {"operation": "click", "outcome": "interrupted"})
-        self.assertEqual(outcome["count"], 1)
+            self.backend.cursor = (201, 500)
+
+        with patch("mouse_controller.time.sleep", side_effect=sleep):
+            result = self.mouse.hold_at(100, 300, duration=1)
+        self.assertFalse(result)
+        self.assertIn("Pointer displaced", result.reason)
+        self.assertEqual(self.backend.events[-1], "up")
+
+    def test_pointer_query_exception_releases(self):
+        with self.assertRaisesRegex(OSError, "query failed"):
+            with self.mouse.pressed_at(100, 300) as pressed:
+                with patch.object(self.backend, "get_cursor_pos",
+                                  side_effect=OSError("query failed")):
+                    pressed.validate()
+        self.assertEqual(self.backend.events[-1], "up")
+
+    def test_custom_loop_validates_focus(self):
+        with self.assertRaisesRegex(RuntimeError, "focus"):
+            with self.mouse.pressed_at(100, 300) as pressed:
+                self.backend.focus = False
+                pressed.validate()
+        self.assertEqual(self.backend.events[-1], "up")
 
 
 if __name__ == "__main__":

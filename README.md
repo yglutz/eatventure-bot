@@ -37,8 +37,8 @@ The bot operates through several intelligent states:
 
 ## 📋 Requirements
 
-- **Operating System**: Windows 10/11
-- **Python**: 3.8 or higher
+- **Operating System**: Windows 10/11, experimental Linux X11, or experimental Android ADB (including Wayland hosts)
+- **Python**: 3.14, managed with uv
 - **Android Device**: Connected via scrcpy
 
 ## 🚀 Installation
@@ -46,10 +46,32 @@ The bot operates through several intelligent states:
 ### Step 1: Install Python Dependencies
 
 ```bash
-pip install -r requirements.txt
+uv python install 3.14
+uv sync --python 3.14 --locked
 ```
 
 ### Step 2: Install and Configure scrcpy
+
+Linux users: read [Linux compatibility](docs/linux-compatibility.md) first for
+managed-interpreter setup, calibration requirements and live-validation limits.
+Use `uv run --locked python main.py` to launch only when ready for live automation.
+
+On Wayland, this command selects ADB and starts **paused with input disabled**:
+
+```bash
+uv run --locked main.py
+```
+
+ADB requires the ignored project `platform-tools/adb`, an authorized USB device,
+and matching serial/package/native-size/crop settings in `config.py`. Override the
+device with `--adb-serial SERIAL`; choose explicitly with `--backend adb`.
+Commands are terminal-local lines: `start`, `pause`, `status`, `quit` (press Enter).
+EOF and Ctrl+C stop the app. ADB mode does not require scrcpy or global hotkeys.
+
+After manually checking calibration, `--enable-adb-input` explicitly opts into
+experimental gestures; it still starts paused. Without that flag, `start` is
+rejected. Separate-process Android gestures and actual gameplay remain unvalidated;
+read the [ADB safety limits](docs/linux-compatibility.md) before enabling input.
 
 1. **Download scrcpy**: [https://github.com/Genymobile/scrcpy](https://github.com/Genymobile/scrcpy)
 2. **Extract** scrcpy to a convenient location

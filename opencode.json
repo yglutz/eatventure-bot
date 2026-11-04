@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "instructions": ["docs/code-guidelines.md"],
   "permissions": [
     { "action": "*", "resource": "*", "effect": "ask" },
     { "action": "read", "resource": "*", "effect": "allow" },
@@ -57,7 +58,7 @@
     "bot-review": {
       "permissions": [
         { "action": "edit", "resource": "*", "effect": "deny" },
-        { "action": "shell", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "ask" },
         { "action": "subagent", "resource": "*", "effect": "deny" }
       ]
     }
