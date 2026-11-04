@@ -6,9 +6,11 @@ without explicit authorization.
 
 | Area | Files | OpenCode agent |
 | --- | --- | --- |
-| Runtime and detection | `image_matcher.py`, `window_capture.py`, timing in `main.py` | `bot-runtime` |
+| Runtime and detection | `image_matcher.py`, `window_capture.py`, `runtime_metrics.py`, `tools/benchmark_runtime.py`, timing in `main.py` and `state_machine.py` | `bot-runtime` |
 | Action flow and state | `bot.py`, `state_machine.py` | `bot-actions` |
 | Input protection | `mouse_controller.py`, safety checks in `bot.py`, overlay in `window_capture.py` | `bot-safety` |
+| Input outcomes | `action_result.py` | `bot-safety`, coordinate with `bot-actions` |
+| Offline runtime regressions | `tests/test_runtime_metrics.py`, `tests/test_image_matcher.py`, `tests/test_mouse_controller.py`, `tests/test_bot_runtime.py`, `tests/test_telegram_notifier.py` | Corresponding runtime, safety, and actions specialists |
 | Gameplay decisions and upgrade exclusions | `bot.py`, `config.py`, recognition assets in `Assets/` | `bot-strategy` |
 | Controls, settings, notifications | `main.py`, `config.py`, `telegram_notifier.py`, `get_chat_id.py` | Coordinate by task |
 | Agent definitions and usage | `.opencode/agents/`, `.opencode/README.md` | `bot-improvements` |

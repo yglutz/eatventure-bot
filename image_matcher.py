@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import logging
+from runtime_metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,10 @@ class ImageMatcher:
         return template, mask
     
     def find_template(self, screenshot, template, mask=None, threshold=None, template_name="Unknown", check_color=False):
+        with metrics.measure('match.single', template=template_name, region=screenshot.shape):
+            return self._find_template(screenshot, template, mask, threshold, template_name, check_color)
+
+    def _find_template(self, screenshot, template, mask=None, threshold=None, template_name="Unknown", check_color=False):
         thresh = threshold if threshold else self.threshold
         
         if template.shape[0] > screenshot.shape[0] or template.shape[1] > screenshot.shape[1]:
@@ -92,6 +97,10 @@ class ImageMatcher:
         return avg_corr >= color_threshold
     
     def find_all_templates(self, screenshot, template, mask=None, threshold=None, min_distance=15, scales=None, template_name="Unknown"):
+        with metrics.measure('match.all', template=template_name, region=screenshot.shape):
+            return self._find_all_templates(screenshot, template, mask, threshold, min_distance, scales, template_name)
+
+    def _find_all_templates(self, screenshot, template, mask=None, threshold=None, min_distance=15, scales=None, template_name="Unknown"):
         thresh = threshold if threshold else self.threshold
         all_matches = []
         

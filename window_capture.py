@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import logging
 import threading
+from runtime_metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,10 @@ class WindowCapture:
         return x, y, width, height
     
     def capture(self, max_y=None):
+        with metrics.measure('capture', max_y=max_y):
+            return self._capture(max_y)
+
+    def _capture(self, max_y=None):
         if not self.hwnd:
             self.find_window()
         
@@ -224,4 +229,3 @@ class ForbiddenAreaOverlay:
             win32gui.PostQuitMessage(0)
             return 0
         return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
-

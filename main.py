@@ -8,6 +8,7 @@ from pynput import keyboard
 
 import config
 from bot import EatventureBot
+from runtime_metrics import metrics
 
 current_match_index = 0
 current_matches = []
@@ -36,8 +37,7 @@ def on_press(key):
                     bot_instance.running = not bot_instance.running
                     if bot_instance.running:
                         logger.info("[Z pressed] Bot STARTED")
-                        from datetime import datetime
-                        bot_instance.current_level_start_time = datetime.now()
+                        bot_instance.current_level_start_time = time.monotonic()
                         bot_instance.telegram.notify_bot_started()
                     else:
                         logger.info("[Z pressed] Bot STOPPED")
@@ -46,6 +46,8 @@ def on_press(key):
                 logger = logging.getLogger(__name__)
                 logger.info("[P pressed] Exiting program...")
                 should_exit = True
+                if bot_instance:
+                    bot_instance.running = False
     except Exception as e:
         pass
 
@@ -100,10 +102,11 @@ def main():
         
         while not should_exit:
             if bot.running:
+                cycle_started = metrics.clock()
                 bot.state_machine.update()
-                time.sleep(config.CYCLE_DELAY)
+                metrics.wait_remaining(cycle_started, config.CYCLE_DELAY)
             else:
-                time.sleep(0.5)
+                metrics.wait(0.5)
         
         logger.info("Program exiting...")
         
@@ -116,6 +119,10 @@ def main():
         listener.stop()
         return 1
     finally:
+        if bot_instance:
+            bot_instance.running = False
+            bot_instance.telegram.close()
+        logging.getLogger(__name__).info("Runtime metrics: %s", metrics.snapshot())
         listener.stop()
     
     return 0
