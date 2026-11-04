@@ -2,9 +2,6 @@ import logging
 from pathlib import Path
 import sys
 import time
-import win32api
-import win32gui
-from pynput import keyboard
 
 import config
 from bot import EatventureBot
@@ -21,10 +18,11 @@ def on_press(key):
     try:
         if hasattr(key, 'char'):
             if key.char == 'x':
-                screen_x, screen_y = win32api.GetCursorPos()
                 logger = logging.getLogger(__name__)
                 if bot_instance and bot_instance.window_capture.hwnd:
-                    win_x, win_y = win32gui.ClientToScreen(bot_instance.window_capture.hwnd, (0, 0))
+                    backend = bot_instance.window_capture.backend
+                    screen_x, screen_y = backend.get_cursor_pos()
+                    win_x, win_y = backend.validate()[:2]
                     rel_x = screen_x - win_x
                     rel_y = screen_y - win_y
                     logger.info(f"[X pressed] Window position: ({rel_x}, {rel_y})")
@@ -40,14 +38,17 @@ def on_press(key):
                         bot_instance.current_level_start_time = datetime.now()
                         bot_instance.telegram.notify_bot_started()
                     else:
+                        bot_instance.pause()
                         logger.info("[Z pressed] Bot STOPPED")
                         bot_instance.telegram.notify_bot_stopped()
             elif key.char == 'p':
                 logger = logging.getLogger(__name__)
                 logger.info("[P pressed] Exiting program...")
                 should_exit = True
-    except Exception as e:
-        pass
+                if bot_instance:
+                    bot_instance.pause()
+    except Exception:
+        logging.getLogger(__name__).exception("Hotkey handling failed")
 
 
 def setup_logging():
@@ -72,6 +73,7 @@ def setup_logging():
 
 
 def main():
+    from pynput import keyboard
     global cursor_showing_enabled
     
     print("=" * 60)
@@ -87,6 +89,7 @@ def main():
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
     
+    bot = None
     try:
         global bot_instance
         bot = EatventureBot()
@@ -100,7 +103,16 @@ def main():
         
         while not should_exit:
             if bot.running:
-                bot.state_machine.update()
+                try:
+                    bot.state_machine.update()
+                except Exception:
+                    was_running = bot.running
+                    bot.pause()
+                    # Never resume a partially executed action with old targets.
+                    from state_machine import State
+                    bot.state_machine.transition(State.FIND_RED_ICONS)
+                    if was_running:
+                        raise
                 time.sleep(config.CYCLE_DELAY)
             else:
                 time.sleep(0.5)
@@ -117,6 +129,8 @@ def main():
         return 1
     finally:
         listener.stop()
+        if bot is not None:
+            bot.stop()
     
     return 0
 

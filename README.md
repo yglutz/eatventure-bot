@@ -37,8 +37,8 @@ The bot operates through several intelligent states:
 
 ## 📋 Requirements
 
-- **Operating System**: Windows 10/11
-- **Python**: 3.8 or higher
+- **Operating System**: Windows 10/11 or experimental Linux X11 (not Wayland)
+- **Python**: 3.14, managed with uv
 - **Android Device**: Connected via scrcpy
 
 ## 🚀 Installation
@@ -46,10 +46,15 @@ The bot operates through several intelligent states:
 ### Step 1: Install Python Dependencies
 
 ```bash
-pip install -r requirements.txt
+uv python install 3.14
+uv sync --python 3.14 --locked
 ```
 
 ### Step 2: Install and Configure scrcpy
+
+Linux users: read [Linux compatibility](docs/linux-compatibility.md) first for
+managed-interpreter setup, calibration requirements and live-validation limits.
+Use `uv run --locked python main.py` to launch only when ready for live automation.
 
 1. **Download scrcpy**: [https://github.com/Genymobile/scrcpy](https://github.com/Genymobile/scrcpy)
 2. **Extract** scrcpy to a convenient location

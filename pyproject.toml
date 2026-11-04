@@ -1,0 +1,18 @@
+[project]
+name = "eatventure-bot"
+version = "0.1.0"
+description = "Eatventure desktop automation for Windows and experimental Linux X11"
+requires-python = ">=3.14"
+dependencies = [
+    "opencv-python>=4.13,<5",
+    "numpy>=2.4,<3",
+    "pillow>=12.1,<13",
+    "pywin32>=311; sys_platform == 'win32'",
+    "pynput>=1.8.1,<2",
+    "requests>=2.32.5,<3",
+    "python-xlib>=0.33,<1; sys_platform == 'linux'",
+    "mss>=10.1,<11; sys_platform == 'linux'",
+]
+
+[tool.uv]
+package = false

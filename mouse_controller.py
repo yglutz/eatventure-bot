@@ -1,145 +1,209 @@
-import win32api
-import win32con
-import win32gui
+"""Fail-closed, backend-neutral desktop input. Importing sends no input."""
+from contextlib import contextmanager
+from dataclasses import dataclass
+import math
 import time
-import logging
 import config
 
-logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class InputResult:
+    success: bool
+    reason: str = ""
+
+    def __bool__(self):
+        return self.success
 
 
 class MouseController:
-    def __init__(self, hwnd, click_delay=0.1):
-        self.hwnd = hwnd
+    def __init__(self, hwnd=None, click_delay=0.1, *, backend=None, cancel_check=None):
+        self._legacy = backend is None
+        if backend is None:
+            import sys
+            if sys.platform != "win32" or hwnd is None:
+                raise RuntimeError("A desktop backend is required")
+            from windows_backend import WindowsBackend
+            # Attach without finding or resizing a different window.
+            backend = WindowsBackend.__new__(WindowsBackend)
+            backend.hwnd = hwnd
+            backend.last_capture_rect = None
+        self.backend = backend
+        self.hwnd = hwnd if hwnd is not None else getattr(backend, "hwnd", None)
         self.click_delay = click_delay
-    
+        self.cancel_check = cancel_check
+        self._pressed_rect = None
+        self._pressed_point = None
+
+    def _zones(self):
+        yield (config.FORBIDDEN_CLICK_X_MIN, config.FORBIDDEN_CLICK_X_MAX,
+               config.FORBIDDEN_CLICK_Y_MIN, math.inf)
+        for i in range(1, 6):
+            prefix = f"FORBIDDEN_ZONE_{i}_"
+            yield tuple(getattr(config, prefix + key)
+                        for key in ("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"))
+
     def is_in_forbidden_zone(self, x, y):
-        if (y >= config.FORBIDDEN_CLICK_Y_MIN and 
-            config.FORBIDDEN_CLICK_X_MIN <= x <= config.FORBIDDEN_CLICK_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_CLICK zone")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_1_Y_MIN <= y <= config.FORBIDDEN_ZONE_1_Y_MAX and
-            config.FORBIDDEN_ZONE_1_X_MIN <= x <= config.FORBIDDEN_ZONE_1_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_1")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_2_Y_MIN <= y <= config.FORBIDDEN_ZONE_2_Y_MAX and
-            config.FORBIDDEN_ZONE_2_X_MIN <= x <= config.FORBIDDEN_ZONE_2_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_2")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_3_Y_MIN <= y <= config.FORBIDDEN_ZONE_3_Y_MAX and
-            config.FORBIDDEN_ZONE_3_X_MIN <= x <= config.FORBIDDEN_ZONE_3_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_3")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_4_Y_MIN <= y <= config.FORBIDDEN_ZONE_4_Y_MAX and
-            config.FORBIDDEN_ZONE_4_X_MIN <= x <= config.FORBIDDEN_ZONE_4_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_4")
-            return True
-        
-        if (config.FORBIDDEN_ZONE_5_Y_MIN <= y <= config.FORBIDDEN_ZONE_5_Y_MAX and
-            config.FORBIDDEN_ZONE_5_X_MIN <= x <= config.FORBIDDEN_ZONE_5_X_MAX):
-            logger.warning(f"Coordinates ({x}, {y}) blocked - FORBIDDEN_ZONE_5")
-            return True
-        
-        return False
-    
+        return any(left <= x <= right and top <= y <= bottom
+                   for left, right, top, bottom in self._zones())
+
+    def validate(self, expected_rect=None, cancel_check=None):
+        """Return verified rect or raise. Cancellation callbacks return True to stop."""
+        if ((self.cancel_check and self.cancel_check()) or
+                (cancel_check and cancel_check())):
+            raise RuntimeError("Input cancelled")
+        captured = self.backend.last_capture_rect
+        if captured is None and not self._legacy:
+            raise RuntimeError("Input requires a prior captured frame")
+        expected = expected_rect or self._pressed_rect or captured
+        rect = tuple(self.backend.validate(expected_rect=expected))
+        if len(rect) != 4 or not all(math.isfinite(v) for v in rect) or min(rect[2:]) <= 0:
+            raise RuntimeError("Invalid client geometry")
+        if expected is not None and rect != tuple(expected):
+            raise RuntimeError("Window geometry changed")
+        if captured is not None and rect != tuple(captured):
+            raise RuntimeError("Captured geometry changed")
+        if self._pressed_rect is not None:
+            # Any uncommanded motion could already have crossed an exclusion;
+            # do not accept even a new position that is itself otherwise safe.
+            if tuple(self.backend.get_cursor_pos()) != self._pressed_point:
+                raise RuntimeError("Pointer displaced during press")
+        return rect
+
     def get_window_position(self):
-        x, y = win32gui.ClientToScreen(self.hwnd, (0, 0))
-        return x, y
-    
+        return self.validate()[:2]
+
+    def _point(self, x, y, relative, rect):
+        if not all(math.isfinite(v) for v in (x, y)):
+            raise RuntimeError("Non-finite coordinates")
+        sx, sy = (rect[0] + x, rect[1] + y) if relative else (x, y)
+        sx, sy = int(sx), int(sy)
+        # Validate requested and rounded positions to avoid fractional escapes.
+        local = (x, y) if relative else (x - rect[0], y - rect[1])
+        for px, py in (local, (sx - rect[0], sy - rect[1])):
+            if not (0 <= px < rect[2] and 0 <= py < rect[3]):
+                raise RuntimeError("Input outside client bounds")
+            if self.is_in_forbidden_zone(px, py):
+                raise RuntimeError("Input intersects forbidden zone")
+        return sx, sy
+
+    def _path(self, start, end, rect):
+        # Slab intersection checks the entire segment, including tangencies.
+        ax, ay = start[0] - rect[0], start[1] - rect[1]
+        bx, by = end[0] - rect[0], end[1] - rect[1]
+        for left, right, top, bottom in self._zones():
+            low, high = 0., 1.
+            for pos, delta, lo, hi in ((ax, bx-ax, left, right),
+                                       (ay, by-ay, top, bottom)):
+                if delta == 0:
+                    if not lo <= pos <= hi:
+                        low, high = 1., 0.
+                        break
+                else:
+                    a, b = (lo-pos)/delta, (hi-pos)/delta
+                    low, high = max(low, min(a, b)), min(high, max(a, b))
+            if low <= high:
+                raise RuntimeError("Drag path intersects forbidden zone")
+
+    @contextmanager
+    def pressed_at(self, x, y, relative=True, *, cancel_check=None):
+        """Yield controller while pressed; unsafe entry raises, release always runs.
+
+        Custom loops must call validate() at least every 50 ms and propagate
+        failures. Use the constructor callback for cancellation in custom loops.
+        """
+        if self._pressed_rect is not None:
+            raise RuntimeError("Nested presses are unsupported")
+        rect = self.validate(cancel_check=cancel_check)
+        point = self._point(x, y, relative, rect)
+        self.backend.move_pointer(*point)
+        self.validate(rect, cancel_check)
+        self._pressed_rect = rect
+        self._pressed_point = point
+        try:
+            self.validate(rect, cancel_check)
+            # A backend may send the down event before raising an exception.
+            self.backend.button_down()
+            yield self
+        finally:
+            try:
+                self.backend.button_up()
+            finally:
+                self._pressed_rect = None
+                self._pressed_point = None
+
+    def _wait(self, duration, rect, cancel_check=None):
+        deadline = time.monotonic() + duration
+        while True:
+            self.validate(rect, cancel_check)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.05, remaining))
+
     def move_to(self, x, y, relative=True):
-        if relative:
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        win32api.SetCursorPos((int(screen_x), int(screen_y)))
-        logger.info(f"Cursor moved to window position ({x}, {y})")
-    
+        try:
+            if self._pressed_rect is not None:
+                raise RuntimeError("move_to is forbidden during an active press; use drag")
+            rect = self.validate()
+            point = self._point(x, y, relative, rect)
+            self.validate(rect)
+            self.backend.move_pointer(*point)
+            return InputResult(True)
+        except Exception as exc:
+            return InputResult(False, str(exc))
+
+    def hold_at(self, x, y, duration=2.0, relative=True, *, cancel_check=None):
+        try:
+            if not math.isfinite(duration) or duration < 0:
+                raise RuntimeError("Invalid input duration")
+            with self.pressed_at(x, y, relative, cancel_check=cancel_check):
+                self._wait(duration, self._pressed_rect, cancel_check)
+            time.sleep(self.click_delay)
+            return InputResult(True)
+        except Exception as exc:
+            return InputResult(False, str(exc))
+
     def click(self, x, y, relative=True):
-        if relative:
-            if self.is_in_forbidden_zone(x, y):
-                return
-            
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        current_pos = win32api.GetCursorPos()
-        
-        win32api.SetCursorPos((screen_x, screen_y))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_x, screen_y, 0, 0)
-        time.sleep(0.02)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_x, screen_y, 0, 0)
-        
-        logger.info(f"Clicked at ({screen_x}, {screen_y})")
-        
-        time.sleep(self.click_delay)
-    
+        return self.hold_at(x, y, 0.02, relative)
+
     def double_click(self, x, y, relative=True):
-        self.click(x, y, relative)
-        time.sleep(0.1)
-    
-    def hold_at(self, x, y, duration=2.0, relative=True):
-        if relative:
-            if self.is_in_forbidden_zone(x, y):
-                return
-            
-            win_x, win_y = self.get_window_position()
-            screen_x = win_x + x
-            screen_y = win_y + y
-        else:
-            screen_x = x
-            screen_y = y
-        
-        win32api.SetCursorPos((int(screen_x), int(screen_y)))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_x, screen_y, 0, 0)
-        logger.info(f"Holding at ({screen_x}, {screen_y}) for {duration}s")
-        time.sleep(duration)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_x, screen_y, 0, 0)
-        
-        time.sleep(self.click_delay)
-    
+        # Preserve the historical single click plus extra delay.
+        result = self.click(x, y, relative)
+        if result:
+            time.sleep(0.1)
+        return result
+
     def drag(self, from_x, from_y, to_x, to_y, duration=0.3, relative=True):
-        if relative:
-            win_x, win_y = self.get_window_position()
-            screen_from_x = win_x + from_x
-            screen_from_y = win_y + from_y
-            screen_to_x = win_x + to_x
-            screen_to_y = win_y + to_y
-        else:
-            screen_from_x = from_x
-            screen_from_y = from_y
-            screen_to_x = to_x
-            screen_to_y = to_y
-        
-        win32api.SetCursorPos((int(screen_from_x), int(screen_from_y)))
-        time.sleep(0.02)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, screen_from_x, screen_from_y, 0, 0)
-        time.sleep(0.02)
-        
-        steps = 20
-        for i in range(steps + 1):
-            t = i / steps
-            current_x = int(screen_from_x + (screen_to_x - screen_from_x) * t)
-            current_y = int(screen_from_y + (screen_to_y - screen_from_y) * t)
-            win32api.SetCursorPos((current_x, current_y))
-            time.sleep(duration / steps)
-        
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, screen_to_x, screen_to_y, 0, 0)
-        logger.info(f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})")
-        time.sleep(self.click_delay)
+        try:
+            if not math.isfinite(duration) or duration < 0:
+                raise RuntimeError("Invalid input duration")
+            rect = self.validate()
+            start = self._point(from_x, from_y, relative, rect)
+            end = self._point(to_x, to_y, relative, rect)
+            self._path(start, end, rect)
+            with self.pressed_at(*start, relative=False):
+                self.validate(rect)
+                steps = max(20, math.ceil(duration / 0.05))
+                previous = start
+                for i in range(1, steps + 1):
+                    self.validate(rect)
+                    point = tuple(int(a + (b-a)*i/steps) for a, b in zip(start, end))
+                    self._point(*point, False, rect)
+                    self._path(previous, point, rect)
+                    self.backend.move_pointer(*point)
+                    self._pressed_point = point
+                    previous = point
+                    self._wait(duration / steps, rect)
+            time.sleep(self.click_delay)
+            return InputResult(True)
+        except Exception as exc:
+            return InputResult(False, str(exc))
+
+    def close(self):
+        # The capture facade owns and closes the shared backend.
+        if self._pressed_rect is not None:
+            try:
+                self.backend.button_up()
+            finally:
+                self._pressed_rect = None
+                self._pressed_point = None

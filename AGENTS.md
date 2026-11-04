@@ -1,14 +1,16 @@
 # Codebase routing
 
-This is a Windows/Win32 bot controlling Eatventure through scrcpy. Keep pure
+This bot controls Eatventure through scrcpy on Windows/Win32 and experimental
+Linux/X11 (not Wayland). Keep pure
 logic testable offline; do not run live input, purchases, or notifications
 without explicit authorization.
 
 | Area | Files | OpenCode agent |
 | --- | --- | --- |
-| Runtime and detection | `image_matcher.py`, `window_capture.py`, timing in `main.py` | `bot-runtime` |
-| Action flow and state | `bot.py`, `state_machine.py` | `bot-actions` |
-| Input protection | `mouse_controller.py`, safety checks in `bot.py`, overlay in `window_capture.py` | `bot-safety` |
+| Runtime and detection | `image_matcher.py`, `window_capture.py`, `windows_backend.py`, `x11_backend.py`, timing in `main.py`, `tests/test_platform_capture.py` | `bot-runtime` |
+| Action flow and state | `bot.py`, `state_machine.py`, `tests/test_portable_integration.py` | `bot-actions` |
+| Input protection | `mouse_controller.py`, safety checks in `bot.py`, backend input/validation, overlay in `windows_backend.py`, `tests/test_mouse_controller.py` | `bot-safety` |
+| Python environment | `pyproject.toml`, `uv.lock`, `requirements.txt` (compatibility mirror) | Coordinator with `bot-runtime` |
 | Gameplay decisions and upgrade exclusions | `bot.py`, `config.py`, recognition assets in `Assets/` | `bot-strategy` |
 | Controls, settings, notifications | `main.py`, `config.py`, `telegram_notifier.py`, `get_chat_id.py` | Coordinate by task |
 | Agent definitions and usage | `.opencode/agents/`, `.opencode/README.md` | `bot-improvements` |
