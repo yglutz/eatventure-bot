@@ -1,7 +1,8 @@
 # Codebase routing
 
 This bot controls Eatventure through scrcpy on Windows/Win32 and experimental
-Linux/X11 (not Wayland). Keep pure
+Linux/X11 (not Wayland desktop automation), plus capture-only Android ADB usable
+independently of the desktop session. Keep pure
 logic testable offline; do not run live input, purchases, or notifications
 without explicit authorization.
 
@@ -11,6 +12,7 @@ without explicit authorization.
 | Action flow and state | `bot.py`, `state_machine.py`, `tests/test_portable_integration.py` | `bot-actions` |
 | Input protection | `mouse_controller.py`, safety checks in `bot.py`, backend input/validation, overlay in `windows_backend.py`, `tests/test_mouse_controller.py` | `bot-safety` |
 | Python environment | `pyproject.toml`, `uv.lock`, `requirements.txt` (compatibility mirror) | Coordinator with `bot-runtime` |
+| Android capture/calibration (input blocked) | `adb_backend.py`, `adb_calibrate.py`, `tests/test_adb_backend.py`, `tests/test_adb_calibrate.py`; bundled executable `platform-tools/adb` (ignored) | `bot-runtime`, input-boundary review by `bot-safety` |
 | Gameplay decisions and upgrade exclusions | `bot.py`, `config.py`, recognition assets in `Assets/` | `bot-strategy` |
 | Controls, settings, notifications | `main.py`, `config.py`, `telegram_notifier.py`, `get_chat_id.py` | Coordinate by task |
 | Agent definitions and usage | `.opencode/agents/`, `.opencode/README.md` | `bot-improvements` |

@@ -1,5 +1,44 @@
 # Linux compatibility
 
+## Android ADB: capture-only stage
+
+ADB capture works independently of X11/Wayland. Only the project's ignored
+`platform-tools/adb` is used; there is no PATH fallback. Explicit serial, expected
+foreground package, native dimensions, crop and logical dimensions are required.
+Do not commit platform-tools binaries or device screenshots.
+
+Example capture-only preview for the discovered phone (full-screen crop is a
+candidate, **not approved calibration**):
+
+```sh
+uv run --locked python adb_calibrate.py \
+  --serial ZT5TIJLVAQH6LJ7T --package com.hwqgrhhjfd.idlefastfood \
+  --native-size 1080 2400 --crop 0 0 1080 2400 \
+  --logical-size 360 780 --output /tmp/opencode/adb-calibration.png
+```
+
+The output directory must exist. The command creates the PNG and an
+`.annotated.png` sibling marking fixed clicks and forbidden zones. Existing
+outputs are rejected. Capture validates exact focus, portrait rotation zero and
+native dimensions before and after transfer, with bounded subprocess timeouts.
+Unknown dumpsys formats fail closed. Annotation does not approve the crop or
+template scale; resizing the full phone image may distort the old layout.
+
+Android 13, package and native 1080×2400 portrait dimensions were discovered
+read-only; one direct native screenshot succeeded. The integrated capture attempt
+was blocked when the device reverted to unauthorized. Reaccept USB debugging on
+the phone before retrying. No taps or gestures have been performed.
+
+Run the full offline suite with `uv run --locked python -m pytest -q` (pytest is
+a uv development dependency). Current result: 64 passed and 43 subtests passed;
+this is not evidence of live-device gesture or calibration correctness.
+
+**Gameplay is not enabled through ADB yet.** Pointer/button methods deliberately
+raise errors. Cancellable gesture semantics, release after failures, calibration,
+and terminal-local start/pause/quit controls must be implemented and validated
+before integrating this backend into normal gameplay. Desktop backends remain
+unchanged; running `main.py` does not select ADB.
+
 ## Status: experimental X11 backend implemented; live validation pending
 
 Windows uses the retained Win32 backend. Linux uses python-xlib/XTEST for window
