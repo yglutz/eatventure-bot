@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 import time
 import config
+from runtime_metrics import metrics
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ class MouseController:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
-            time.sleep(min(0.05, remaining))
+            metrics.wait(min(0.05, remaining))
 
     def move_to(self, x, y, relative=True):
         try:
@@ -165,7 +166,7 @@ class MouseController:
                 raise RuntimeError("Invalid input duration")
             with self.pressed_at(x, y, relative, cancel_check=cancel_check):
                 self._wait(duration, self._pressed_rect, cancel_check)
-            time.sleep(self.click_delay)
+            metrics.wait(self.click_delay)
             return InputResult(True)
         except Exception as exc:
             return InputResult(False, str(exc))
@@ -177,7 +178,7 @@ class MouseController:
         # Preserve the historical single click plus extra delay.
         result = self.click(x, y, relative)
         if result:
-            time.sleep(0.1)
+            metrics.wait(0.1)
         return result
 
     def drag(self, from_x, from_y, to_x, to_y, duration=0.3, relative=True):
@@ -201,7 +202,7 @@ class MouseController:
                     self._pressed_point = point
                     previous = point
                     self._wait(duration / steps, rect)
-            time.sleep(self.click_delay)
+            metrics.wait(self.click_delay)
             return InputResult(True)
         except Exception as exc:
             return InputResult(False, str(exc))

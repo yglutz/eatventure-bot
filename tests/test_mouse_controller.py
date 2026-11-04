@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from mouse_controller import MouseController
+from runtime_metrics import RuntimeMetrics
 
 
 class Backend:
@@ -155,7 +156,7 @@ class MouseTests(unittest.TestCase):
                 else:
                     cancelled[0] = True
 
-            with patch("mouse_controller.time.sleep", side_effect=sleep):
+            with patch("mouse_controller.metrics.sleeper", side_effect=sleep):
                 result = self.mouse.hold_at(100, 300, duration=1)
             self.assertFalse(result)
             self.assertEqual(self.backend.events[-1], "up")
@@ -177,7 +178,7 @@ class MouseTests(unittest.TestCase):
         self.assertEqual(self.backend.events[-1], "up")
 
     def test_wait_exception_releases_and_reports_failure(self):
-        with patch("mouse_controller.time.sleep", side_effect=OSError("timer failure")):
+        with patch("mouse_controller.metrics.sleeper", side_effect=OSError("timer failure")):
             result = self.mouse.hold_at(100, 300, duration=1)
         self.assertFalse(result)
         self.assertIn("timer failure", result.reason)
@@ -233,7 +234,7 @@ class MouseTests(unittest.TestCase):
         def sleep(seconds):
             self.backend.cursor = (201, 500)
 
-        with patch("mouse_controller.time.sleep", side_effect=sleep):
+        with patch("mouse_controller.metrics.sleeper", side_effect=sleep):
             result = self.mouse.hold_at(100, 300, duration=1)
         self.assertFalse(result)
         self.assertIn("Pointer displaced", result.reason)
@@ -253,6 +254,56 @@ class MouseTests(unittest.TestCase):
                 self.backend.focus = False
                 pressed.validate()
         self.assertEqual(self.backend.events[-1], "up")
+
+    def test_deliberate_waits_excluded_from_owner_scope_with_fake_clock(self):
+        for action, expected in (("hold", .32), ("drag", .32), ("double", .22)):
+            with self.subTest(action=action):
+                self.setUp()
+                self.mouse.click_delay = .1
+                now = [0.0]
+                sleeps = []
+
+                def sleep(seconds):
+                    if self.mouse._pressed_rect is not None:
+                        self.assertLessEqual(seconds, .05)
+                    sleeps.append(seconds)
+                    now[0] += seconds
+
+                collector = RuntimeMetrics(clock=lambda: now[0],
+                                           cpu_clock=lambda: 0.0, sleeper=sleep)
+                with patch("mouse_controller.metrics", collector), patch(
+                        "mouse_controller.time.monotonic", side_effect=lambda: now[0]):
+                    # The bot owns this scope; controller must not duplicate it.
+                    with collector.measure("input", operation=action):
+                        if action == "hold":
+                            result = self.mouse.hold_at(100, 300, duration=.22)
+                        elif action == "drag":
+                            result = self.mouse.drag(100, 300, 200, 400, duration=.22)
+                        else:
+                            result = self.mouse.double_click(100, 300)
+                self.assertTrue(result, result.reason)
+                self.assertAlmostEqual(sum(sleeps), expected)
+                rows = collector.snapshot()["series"]
+                inputs = [row for row in rows if row["name"] == "input"]
+                self.assertEqual(len(inputs), 1)
+                self.assertEqual(inputs[0]["count"], 1)
+                self.assertAlmostEqual(inputs[0]["wall"]["mean"], expected)
+                self.assertAlmostEqual(inputs[0]["work"]["mean"], 0)
+                self.assertEqual(self.backend.events[-1], "up")
+
+    def test_instrumented_wait_interrupt_releases_and_records_failure(self):
+        def interrupted_sleep(seconds):
+            raise KeyboardInterrupt()
+
+        collector = RuntimeMetrics(sleeper=interrupted_sleep)
+        with patch("mouse_controller.metrics", collector):
+            with self.assertRaises(KeyboardInterrupt):
+                self.mouse.hold_at(100, 300, duration=1)
+        self.assertEqual(self.backend.events[-1], "up")
+        self.assertIsNone(self.mouse._pressed_rect)
+        row = collector.snapshot()["series"][0]
+        self.assertEqual(row["name"], "wait")
+        self.assertEqual(row["errors"], 1)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,9 @@ class WindowCapture:
 
     def capture(self, max_y=None):
         with metrics.measure('capture', max_y=max_y):
+            # Preserve the original no-argument backend contract for full frames.
+            if max_y is None:
+                return self.backend.capture()
             return self.backend.capture(max_y)
 
     def __getattr__(self, name):

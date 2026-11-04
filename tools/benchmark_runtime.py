@@ -6,6 +6,7 @@ No capture, input, bot import, network, or notifications.
 """
 import argparse
 import json
+import math
 from pathlib import Path
 import platform
 import statistics
@@ -53,7 +54,7 @@ def main():
             assert outputs[0] == outputs[1], 'Detection changed'
         report['workloads'][name] = {
             label: dict(median_ms=statistics.median(values) * 1000,
-                        p95_ms=sorted(values)[int((len(values) - 1) * .95)] * 1000)
+                        p95_ms=sorted(values)[math.ceil(len(values) * .95) - 1] * 1000)
             for label, values in samples.items()}
     report['metrics'] = metrics.snapshot()
     print(json.dumps(report, indent=2))

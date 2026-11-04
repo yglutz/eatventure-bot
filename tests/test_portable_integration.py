@@ -9,6 +9,33 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 
 class PortableIntegrationTests(unittest.TestCase):
+    def test_main_waits_only_remaining_cycle_interval(self):
+        main = importlib.import_module('main')
+        from runtime_metrics import RuntimeMetrics
+        from queue import Empty
+        now = [0.0]
+        waits = []
+        def sleep(seconds):
+            waits.append(seconds)
+            now[0] += seconds
+        collector = RuntimeMetrics(clock=lambda: now[0], sleeper=sleep)
+        bot = Mock(running=True)
+        bot.state_machine.update.side_effect = lambda: now.__setitem__(0, .03)
+        controls = Mock()
+        controls.commands.get_nowait.side_effect = [Empty(), ('quit', 0)]
+        keyboard = SimpleNamespace(Listener=Mock(return_value=Mock()))
+        with patch.dict('os.environ', {}, clear=True), \
+                patch.dict(sys.modules, {'pynput': SimpleNamespace(keyboard=keyboard)}), \
+                patch.object(main, 'setup_logging'), \
+                patch.object(main, 'EatventureBot', return_value=bot), \
+                patch('terminal_controls.CommandQueue', return_value=controls), \
+                patch.object(main, 'metrics', collector), \
+                patch.object(main.config, 'CYCLE_DELAY', .1), \
+                patch.object(main, 'should_exit', False):
+            self.assertEqual(main.main(['--backend', 'desktop']), 0)
+        self.assertEqual(len(waits), 1)
+        self.assertAlmostEqual(waits[0], .07)
+
     def test_desktop_restart_waits_for_handler_unwind_on_action_thread(self):
         main = importlib.import_module('main')
         bot = Mock(running=False)
@@ -105,6 +132,9 @@ class PortableIntegrationTests(unittest.TestCase):
             self.assertEqual(main.select_backend('desktop'), 'desktop')
 
     def setUp(self):
+        # Load native extensions outside patch.dict(sys.modules): restoring
+        # that dictionary must not unload/reimport NumPy between test cases.
+        importlib.import_module('adb_backend')
         modules = {
             "image_matcher": SimpleNamespace(ImageMatcher=Mock()),
             "telegram_notifier": SimpleNamespace(TelegramNotifier=Mock()),
@@ -126,6 +156,122 @@ class PortableIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Input failed"):
             self.bot.handle_open_boxes(None)
         self.bot.window_capture.capture.assert_not_called()
+
+    def test_unidentified_stats_denied_even_with_synthetic_purchase_coordinates(self):
+        with patch.object(self.bot_module.config, 'STATS_UPGRADE_POS', (300, 100)), \
+                self.assertLogs(self.bot_module.logger, level='WARNING') as logs:
+            self.assertEqual(self.bot.handle_upgrade_stats(None), self.bot_module.State.SCROLL)
+        self.bot.mouse_controller.click.assert_not_called()
+        self.bot.window_capture.capture.assert_not_called()
+        self.assertNotIn('COMPLETED', '\n'.join(logs.output))
+
+    def test_red_click_advances_and_invalidates_remaining_targets(self):
+        self.bot.red_icons = [(1, 20, 30), (1, 40, 50)]
+        self.bot.current_red_icon_index = 0
+        self.bot.red_icons_observed_at = 10
+        self.bot.mouse_controller.is_in_forbidden_zone.return_value = False
+        with patch.object(self.bot_module.time, 'monotonic', return_value=10):
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.CHECK_UNLOCK)
+            self.assertEqual(self.bot.current_red_icon_index, 1)
+            self.assertEqual(self.bot.red_icons, [])
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.FIND_RED_ICONS)
+        self.bot.mouse_controller.click.assert_called_once()
+
+    def test_expired_red_detection_emits_no_input(self):
+        self.bot.red_icons = [(1, 20, 30)]
+        self.bot.current_red_icon_index = 0
+        self.bot.red_icons_observed_at = 10
+        with patch.object(self.bot_module.time, 'monotonic', return_value=15.01):
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.FIND_RED_ICONS)
+        self.bot.mouse_controller.click.assert_not_called()
+
+    def test_red_observation_budget_allows_capture_and_detection_latency(self):
+        # Timestamp is taken before capture; a realistic capture/detect cost
+        # must not starve admission, nor refresh authority after a mutation.
+        now = [10.0]
+        frame = MagicMock(size=1, shape=(600, 360))
+        def capture():
+            now[0] += .9
+            return frame
+        def detect(*args, **kwargs):
+            now[0] += .6
+            return [(1, 20, 30), (1, 40, 50)]
+        self.bot.window_capture.capture.side_effect = capture
+        self.bot.image_matcher = Mock()
+        self.bot.image_matcher.find_all_templates.side_effect = detect
+        self.bot.templates = {'RedIcon': (Mock(), None)}
+        self.bot.cycle_counter = 0
+        self.bot.failed_click_tracker = {}
+        self.bot.mouse_controller.is_in_forbidden_zone.return_value = False
+        with patch.object(self.bot_module.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.bot_module.config, 'RED_ICON_MIN_MATCHES', 1), \
+                patch.object(self.bot, '_is_in_any_forbidden_zone', return_value=False), \
+                patch.object(self.bot_module.config, 'RED_ICON_OBSERVATION_MAX_AGE', 5.0):
+            self.assertEqual(self.bot.handle_find_red_icons(None), self.bot_module.State.CLICK_RED_ICON)
+            self.assertAlmostEqual(now[0] - self.bot.red_icons_observed_at, 1.5)
+            self.bot.mouse_controller.click.reset_mock()  # Ignore initial dismissal.
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.CHECK_UNLOCK)
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.FIND_RED_ICONS)
+        self.bot.mouse_controller.click.assert_called_once()
+        self.assertIsNone(self.bot.red_icons_observed_at)
+
+    def test_failed_and_raising_inputs_invalidate_queue(self):
+        for outcome in (False, RuntimeError('partial input')):
+            self.bot.red_icons = [(1, 20, 30)]
+            self.bot.red_icons_observed_at = 10
+            if isinstance(outcome, Exception):
+                self.bot.mouse_controller.click.side_effect = outcome
+            else:
+                self.bot.mouse_controller.click.return_value = outcome
+            with self.assertRaises(RuntimeError):
+                self.bot._click(20, 30)
+            self.assertEqual(self.bot.red_icons, [])
+            self.assertIsNone(self.bot.red_icons_observed_at)
+
+    def test_blocked_offset_skips_without_invalidating_observation(self):
+        self.bot.red_icons = [(1, 20, 30), (1, 40, 50)]
+        self.bot.current_red_icon_index = 0
+        self.bot.red_icons_observed_at = 10
+        self.bot.mouse_controller.is_in_forbidden_zone.return_value = True
+        with patch.object(self.bot_module.time, 'monotonic', return_value=10):
+            self.assertEqual(self.bot.handle_click_red_icon(None), self.bot_module.State.CLICK_RED_ICON)
+        self.assertEqual(self.bot.current_red_icon_index, 1)
+        self.assertEqual(len(self.bot.red_icons), 2)
+        self.bot.mouse_controller.click.assert_not_called()
+
+    def test_wait_uses_monotonic_deadline_and_checks_cancellation(self):
+        now = [0.0]
+        def wait(seconds):
+            now[0] += seconds
+            self.bot.pause()
+        with patch.object(self.bot_module.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.bot_module.metrics, 'wait', side_effect=wait):
+            with self.assertRaisesRegex(RuntimeError, 'paused'):
+                self.bot._wait(10)
+        self.assertLessEqual(now[0], .05)
+
+    def test_transition_does_not_count_or_notify_unverified_completion(self):
+        self.bot.templates = {'newLevel': (Mock(), None)}
+        self.bot.image_matcher = Mock()
+        self.bot.image_matcher.find_template.return_value = (True, 1, 10, 20)
+        self.bot.window_capture.capture.return_value = MagicMock(size=1)
+        self.bot.total_levels_completed = 0
+        self.bot.telegram = Mock()
+        with patch.object(self.bot, '_wait'):
+            self.assertEqual(self.bot.handle_transition_level(None), self.bot_module.State.WAIT_FOR_UNLOCK)
+        self.assertEqual(self.bot.total_levels_completed, 0)
+        self.bot.telegram.notify_new_level.assert_not_called()
+
+    def test_station_search_retry_limit(self):
+        self.bot.templates = {}
+        self.bot.last_clicked_pos = None
+        self.bot.red_icon_processed_count = 0
+        self.bot.consecutive_failed_cycles = 0
+        self.bot.window_capture.capture.return_value = MagicMock(size=1)
+        with patch.object(self.bot, '_wait') as wait:
+            self.assertEqual(self.bot.handle_search_upgrade_station(None), self.bot_module.State.OPEN_BOXES)
+        self.assertEqual(self.bot.window_capture.capture.call_count, 5)
+        self.assertEqual(wait.call_count, 4)
 
     def test_initial_input_requires_capture(self):
         self.bot.window_capture.backend.last_capture_rect = None

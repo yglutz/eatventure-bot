@@ -8,6 +8,7 @@ import queue
 
 import config
 from bot import EatventureBot
+from runtime_metrics import metrics
 
 current_match_index = 0
 current_matches = []
@@ -172,6 +173,7 @@ def main(argv=None):
                     elif command == 'status':
                         logger.info('ADB %s; input opt-in=%s', 'RUNNING' if bot.running else 'PAUSED', args.enable_adb_input)
             if bot.running:
+                cycle_started = metrics.clock()
                 try:
                     bot.state_machine.update()
                 except Exception:
@@ -182,9 +184,9 @@ def main(argv=None):
                     bot.state_machine.transition(State.FIND_RED_ICONS)
                     if was_running:
                         raise
-                time.sleep(config.CYCLE_DELAY)
+                metrics.wait_remaining(cycle_started, config.CYCLE_DELAY)
             else:
-                time.sleep(0.05 if controls is not None else 0.5)
+                metrics.wait(0.05 if controls is not None else 0.5)
         
         logger.info("Program exiting...")
         

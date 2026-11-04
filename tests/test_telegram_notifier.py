@@ -53,18 +53,24 @@ class TestTelegramNotifier(unittest.TestCase):
 
     def test_queue_full_drops_message_with_warning(self):
         """When the queue is full, the message is dropped and a warning is logged."""
-        import logging
         with patch("telegram_notifier.requests.post") as mock_post:
             # Block the worker so it doesn't drain the queue
             block = threading.Event()
-            mock_post.side_effect = lambda *a, **kw: block.wait(10)
+            entered = threading.Event()
+
+            def blocked_post(*args, **kwargs):
+                entered.set()
+                block.wait(5)
+                return MagicMock(status_code=200)
+
+            mock_post.side_effect = blocked_post
 
             notifier = self._make_notifier(max_queue_size=1)
             try:
                 # The worker will pick up the first message and block on requests.post
                 notifier.send_message("msg1")
                 # Give the worker time to pull msg1 from the queue (it's now blocked)
-                time.sleep(0.2)
+                self.assertTrue(entered.wait(2))
 
                 # Queue is empty again (worker pulled msg1) — msg2 fills it
                 result2 = notifier.send_message("msg2")
@@ -179,6 +185,86 @@ class TestTelegramNotifier(unittest.TestCase):
             notifier.close()
             notifier.close()  # Second call should be a no-op
             self.assertFalse(notifier._thread.is_alive())
+
+    def test_queue_requires_positive_bound(self):
+        for bound in (0, -1, 1.5, None):
+            with self.subTest(bound=bound), self.assertRaises(ValueError):
+                self._make_notifier(enabled=False, max_queue_size=bound)
+
+    def test_close_timeout_then_repeat_close_joins_worker(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_post(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return MagicMock(status_code=200)
+
+        with patch("telegram_notifier.requests.post", side_effect=blocked_post) as post:
+            notifier = self._make_notifier(max_queue_size=1)
+            try:
+                self.assertTrue(notifier.send_message("in flight"))
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(notifier.send_message("pending"))
+                self.assertFalse(notifier.close(timeout=0))
+                self.assertTrue(notifier._thread.is_alive())
+                self.assertFalse(notifier.send_message("too late"))
+                release.set()
+                self.assertTrue(notifier.close())
+                self.assertEqual(post.call_count, 2)
+            finally:
+                release.set()
+                notifier.close()
+
+    def test_enqueue_is_serialized_with_close(self):
+        enqueue_entered = threading.Event()
+        release_enqueue = threading.Event()
+        close_attempted = threading.Event()
+        results = []
+        with patch("telegram_notifier.requests.post", return_value=MagicMock(status_code=200)) as post:
+            notifier = self._make_notifier()
+            original_lock = notifier._lifecycle_lock
+            original_put = notifier._queue.put_nowait
+
+            class ObservedLock:
+                def __enter__(self):
+                    if threading.current_thread().name == "test-closer":
+                        close_attempted.set()
+                    original_lock.acquire()
+
+                def __exit__(self, *args):
+                    original_lock.release()
+
+            def paused_put(message):
+                enqueue_entered.set()
+                if not release_enqueue.wait(2):
+                    raise AssertionError("enqueue was not released")
+                original_put(message)
+
+            notifier._lifecycle_lock = ObservedLock()
+            sender = threading.Thread(target=lambda: results.append(notifier.send_message("accepted")))
+            closer = threading.Thread(target=notifier.close, name="test-closer")
+            try:
+                with patch.object(notifier._queue, "put_nowait", side_effect=paused_put):
+                    sender.start()
+                    self.assertTrue(enqueue_entered.wait(2))
+                    closer.start()
+                    self.assertTrue(close_attempted.wait(2))
+                    self.assertFalse(notifier._stop_event.is_set())
+                    release_enqueue.set()
+                    sender.join(2)
+                    closer.join(2)
+                self.assertFalse(sender.is_alive())
+                self.assertFalse(closer.is_alive())
+                self.assertEqual(results, [True])
+                self.assertEqual(post.call_count, 1)
+                self.assertTrue(notifier._queue.empty())
+            finally:
+                release_enqueue.set()
+                sender.join(2)
+                if closer.ident is not None:
+                    closer.join(2)
+                notifier.close()
 
 
 if __name__ == "__main__":

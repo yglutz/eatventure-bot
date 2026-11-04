@@ -124,6 +124,26 @@ class MetricsTests(unittest.TestCase):
         backend.capture.assert_called_once_with(400)
         self.assertEqual(self.rows()['capture']['labels'], {'max_y': '400'})
 
+    def test_full_capture_latency_and_failure_accounted(self):
+        import window_capture
+
+        def capture_frame():
+            self.clock.work(2)
+            raise RuntimeError('capture failed')
+
+        backend = Mock()
+        backend.capture.side_effect = capture_frame
+        capture = window_capture.WindowCapture(backend=backend)
+        with patch.object(window_capture, 'metrics', self.metrics):
+            with self.assertRaisesRegex(RuntimeError, 'capture failed'):
+                capture.capture()
+        backend.capture.assert_called_once_with()
+        row = self.rows()['capture']
+        self.assertEqual(row['labels'], {'max_y': 'None'})
+        self.assertEqual(row['errors'], 1)
+        self.assertEqual(row['wall']['mean'], 2)
+        self.assertEqual(row['cpu']['mean'], 2)
+
 
 if __name__ == '__main__':
     unittest.main()

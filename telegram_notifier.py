@@ -1,5 +1,6 @@
 import requests
 import logging
+import math
 import queue
 import threading
 from datetime import datetime
@@ -9,6 +10,8 @@ logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
     def __init__(self, bot_token, chat_id, enabled=True, max_queue_size=16):
+        if not isinstance(max_queue_size, int) or max_queue_size <= 0:
+            raise ValueError("max_queue_size must be a positive integer")
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
@@ -17,6 +20,7 @@ class TelegramNotifier:
         self._stop_event = threading.Event()
         self._thread = None
         self._closed = False
+        self._lifecycle_lock = threading.Lock()
 
         if self.enabled:
             logger.info("Telegram notifier enabled")
@@ -66,26 +70,37 @@ class TelegramNotifier:
             logger.error(f"Error sending Telegram message: {e}")
 
     def send_message(self, message):
-        if not self.enabled or self._closed:
-            return False
+        # Serialize admission with shutdown so an accepted message cannot arrive
+        # after the worker has finished draining. Never wait for queue capacity.
+        with self._lifecycle_lock:
+            if not self.enabled or self._closed:
+                return False
+            try:
+                self._queue.put_nowait(message)
+                return True
+            except queue.Full:
+                pass
+        logger.warning("Telegram notifier queue full; dropping message")
+        return False
 
-        try:
-            self._queue.put_nowait(message)
-            return True
-        except queue.Full:
-            logger.warning("Telegram notifier queue full; dropping message")
-            return False
+    def close(self, timeout=10):
+        """Stop admission and attempt to drain; return whether the worker stopped.
 
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
+        Waiting is bounded, not a delivery guarantee. A timed-out daemon worker
+        continues draining; another close call can wait for it again.
+        """
+        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("timeout must be finite and nonnegative")
+        with self._lifecycle_lock:
+            self._closed = True
+            self._stop_event.set()
 
         if self._thread is not None:
-            self._stop_event.set()
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 logger.warning("Telegram notifier thread did not stop within timeout")
+                return False
+        return True
 
     def notify_bot_started(self):
         message = "🤖 <b>Bot Started</b>"

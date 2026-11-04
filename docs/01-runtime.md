@@ -3,7 +3,7 @@
 Owner: `bot-runtime`; coordinate with `bot-actions` and `bot-safety` for shared
 files and behavior changes.
 
-## Current leads
+## Baseline leads (not all still current)
 
 - `main.py` adds `CYCLE_DELAY` after every state update; mouse clicks also sleep.
 - `bot.py` repeatedly dismisses panels and searches similar screen regions.
@@ -15,7 +15,8 @@ files and behavior changes.
 - `image_matcher.py` collects all qualifying pixels before suppression and
   recalculates template histograms during color validation.
 - `window_capture.py` allocates Win32 capture resources per capture.
-- Enabled Telegram requests can block gameplay for up to their network timeout.
+- Synchronous Telegram requests formerly blocked gameplay; the queue described
+  below now isolates network requests from the action thread.
 
 ## Stages
 
@@ -56,6 +57,29 @@ instrumented waiting, not arbitrary blocking I/O. `metrics.snapshot()` exposes
 the data. The main loop waits only for the remaining minimum cycle interval,
 rather than adding the full cycle delay after work; idle backoff remains.
 
+Merge reconciliation restored full-frame backend call compatibility, connected
+input and deliberate waits to metrics, and added main-loop timing regressions.
+Bot settling waits remain bounded and pause-aware; they have not been replaced
+by visual readiness detection. Red detections are observation-scoped: input
+attempts (including failures) invalidate remaining coordinates; blocked offsets
+can skip within an unchanged fresh observation. Remembered Y positions no longer
+pretend to identify stations. Holds invalidate queued detections, and box opening
+reobserves rather than clicking a batch of pre-mutation targets.
+`RED_ICON_OBSERVATION_MAX_AGE` defaults to five seconds, measured from before
+capture, so normal ADB transfer/detection latency does not exhaust a one-second
+budget. Input mutations still invalidate the observation immediately.
+
+Stats purchasing is disabled until panel/control identity evidence exists.
+Generic Open/Unlock interactions do not increment completed levels or emit
+completion notifications. Successful input transport is not proof of a purchase.
+These are conservative baseline repairs, not verified composite gameplay actions.
+
+The merge-repair offline suite passed **150 tests and 88 subtests** on Linux.
+Coverage includes synthetic protected stats configuration, red queue invalidation
+and progression, denied/raising input, cycle timing, controller wait accounting,
+and notification lifecycle races. No device actions or real network sends were
+used. This does not complete every stage below.
+
 Offline regression tests live in `tests/`. Run them without starting the bot:
 
 ```sh
@@ -70,11 +94,13 @@ seed 1701, 660x360 image, 100 samples after five warmups) measured:
 
 | Workload | Baseline median / p95 ms | Instrumented median / p95 ms |
 | --- | --- | --- |
-| Single match with color | 12.560 / 13.100 | 12.613 / 13.242 |
-| All matches | 12.920 / 13.240 | 12.924 / 13.362 |
+| Single match with color | 13.076 / 13.478 | 13.095 / 13.508 |
+| All matches | 13.501 / 13.903 | 13.499 / 13.892 |
 
 Outputs were identical. This measures instrumentation overhead, not a speedup.
-Instrumented mean calling-thread CPU was 12.683 ms and 12.904 ms respectively
+These merge-repair rerun figures use nearest-rank p95, consistent with runtime
+metrics, replacing the earlier benchmark's percentile convention.
+Instrumented mean calling-thread CPU was 13.122 ms and 13.455 ms respectively
 (including warmups); baseline CPU was not separately measured. These dependency
 versions differ from the pinned Windows requirements.
 
@@ -90,14 +116,19 @@ versions differ from the pinned Windows requirements.
 - Histogram caching, local-peak extraction, target-local/broad-fallback detection,
   and color candidate regions remain deferred pending representative hotspot and
   accuracy evidence. The existing detector and three-variant agreement remain.
+- Visual readiness waits and verified composite purchase results remain deferred.
+  Existing settling delays and bounded retries are retained rather than removed
+  without representative UI evidence.
 - Asynchronous notifications are implemented: `TelegramNotifier` uses a bounded
-  non-blocking queue (default 16) with a daemon background thread. `close()`
-  flushes pending messages before shutdown. `main.py` calls `close()` in the
-  `finally` block. Offline tests in `tests/test_telegram_notifier.py` cover
-  enqueue latency, queue overflow, FIFO ordering, and idempotent shutdown.
+  non-blocking queue (default 16) with a daemon background thread. Shutdown is
+  bounded and best-effort, not guaranteed delivery or a guaranteed complete flush.
+  `main.py` calls `bot.stop()` in its `finally` block, which closes the notifier.
+  Offline tests in `tests/test_telegram_notifier.py` cover enqueue latency, queue
+  overflow, FIFO ordering, and shutdown.
 - Capture-resource reuse/cropped capture remains deferred absent measured need.
-  Existing capture error cleanup and unchecked PrintWindow failure remain risks;
-  capture instrumentation does not repair them.
+  Existing Windows capture code checks PrintWindow failure, uses scoped resource
+  cleanup, and rejects changed geometry before publishing capture authority.
+  These protections have mocked coverage, not live Windows validation.
 - Windows/device capture latency, overall CPU use, action success, and level
   throughput require separate authorized validation. No live bot, physical input,
   purchases, or real notifications were used for this implementation.

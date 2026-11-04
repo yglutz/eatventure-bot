@@ -124,6 +124,32 @@ class PlatformCaptureTests(unittest.TestCase):
         capture.capture()
         backend.capture.assert_called_once_with()
 
+    def test_facade_preserves_legacy_no_argument_backend(self):
+        frame = object()
+
+        class LegacyBackend:
+            def capture(self):
+                return frame
+
+        capture = WindowCapture(backend=LegacyBackend())
+        self.assertIs(capture.capture(), frame)
+        self.assertIs(capture.capture(None), frame)
+
+    def test_facade_explicit_crop_uses_backend_validation(self):
+        # Synthetic X11 contract coverage, not live cropped-capture evidence.
+        backend = self.backend()
+        capture = WindowCapture(backend=backend)
+        backend.grabber.grab.return_value = np.zeros((5, 20, 4), dtype=np.uint8)
+        self.assertEqual(capture.capture(5).shape, (5, 20, 3))
+        backend.grabber.grab.assert_called_once_with(
+            dict(left=2, top=3, width=20, height=5))
+        self.assertEqual(capture.last_capture_rect, (2, 3, 20, 10))
+        backend.grabber.grab.reset_mock()
+        with self.assertRaises(ValueError):
+            capture.capture(0)
+        backend.grabber.grab.assert_not_called()
+        self.assertIsNone(capture.last_capture_rect)
+
     def test_overlay_explicitly_unsupported(self):
         with patch("window_capture.sys.platform", "linux"):
             overlay = ForbiddenAreaOverlay(42, [])
