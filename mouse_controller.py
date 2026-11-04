@@ -105,11 +105,13 @@ class MouseController:
                 raise RuntimeError("Drag path intersects forbidden zone")
 
     @contextmanager
-    def pressed_at(self, x, y, relative=True, *, cancel_check=None):
+    def pressed_at(self, x, y, relative=True, *, cancel_check=None, deadline=None):
         """Yield controller while pressed; unsafe entry raises, release always runs.
 
         Custom loops must call validate() at least every 50 ms and propagate
         failures. Use the constructor callback for cancellation in custom loops.
+        Optional deadline is absolute monotonic time, forwarded to capable
+        backends. Blocking ADB operations can delay cancellation by two seconds.
         """
         if self._pressed_rect is not None:
             raise RuntimeError("Nested presses are unsupported")
@@ -119,7 +121,10 @@ class MouseController:
         self.validate(rect, cancel_check)
         self._pressed_rect = rect
         self._pressed_point = point
+        deadline_hook = getattr(self.backend, "set_gesture_deadline", None)
         try:
+            if deadline_hook is not None:
+                deadline_hook(deadline)
             self.validate(rect, cancel_check)
             # A backend may send the down event before raising an exception.
             self.backend.button_down()
@@ -130,6 +135,8 @@ class MouseController:
             finally:
                 self._pressed_rect = None
                 self._pressed_point = None
+                if deadline_hook is not None:
+                    deadline_hook(None)
 
     def _wait(self, duration, rect, cancel_check=None):
         deadline = time.monotonic() + duration

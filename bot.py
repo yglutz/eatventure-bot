@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 class EatventureBot:
-    def __init__(self):
+    def __init__(self, *, window_capture=None):
         logger.info("Initializing Eatventure Bot...")
         self.running = False
-        self.window_capture = None
+        self.window_capture = window_capture
         self.mouse_controller = None
         self.overlay = None
         try:
@@ -33,7 +33,8 @@ class EatventureBot:
             raise
 
     def _initialize(self):
-        self.window_capture = WindowCapture(config.WINDOW_TITLE, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+        if self.window_capture is None:
+            self.window_capture = WindowCapture(config.WINDOW_TITLE, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
         self.image_matcher = ImageMatcher(config.MATCH_THRESHOLD)
         self.mouse_controller = MouseController(
             self.window_capture.hwnd,
@@ -73,9 +74,9 @@ class EatventureBot:
         self.telegram = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, config.TELEGRAM_ENABLED)
         
         self.overlay = None
-        if config.ShowForbiddenArea and sys.platform != "win32":
+        if config.ShowForbiddenArea and not self.window_capture.supports_overlay:
             logger.info("Forbidden-area overlay unsupported on Linux; static input zones remain enforced")
-        if config.ShowForbiddenArea and sys.platform == "win32":
+        if config.ShowForbiddenArea and self.window_capture.supports_overlay:
             forbidden_zones = [
                 (config.FORBIDDEN_ZONE_1_X_MIN, config.FORBIDDEN_ZONE_1_X_MAX, 
                  config.FORBIDDEN_ZONE_1_Y_MIN, config.FORBIDDEN_ZONE_1_Y_MAX),
@@ -142,6 +143,23 @@ class EatventureBot:
         # The in-flight pressed_at context releases on its next validation.
         # Do not send release concurrently from the keyboard listener thread.
         self.running = False
+
+    def resume(self):
+        """Called only on the action thread, after any old handler unwound."""
+        self.red_icons = []
+        self.current_red_icon_index = 0
+        self.last_clicked_pos = None
+        self.upgrade_station_pos = None
+        self.wait_for_unlock_attempts = 0
+        self.upgrade_found_in_cycle = False
+        self.red_icon_cycle_count = 0
+        self.cycle_counter = 0
+        self.consecutive_failed_cycles = 0
+        self.failed_click_tracker.clear()
+        self.window_capture.backend.last_capture_rect = None
+        self.state_machine.transition(State.FIND_RED_ICONS)
+        self.current_level_start_time = datetime.now()
+        self.running = True
     
     def register_states(self):
         self.state_machine.register_handler(State.FIND_RED_ICONS, self.handle_find_red_icons)
@@ -413,7 +431,7 @@ class EatventureBot:
         consecutive_not_found = 0
         required_not_found = 2
         
-        with self.mouse_controller.pressed_at(x, y, relative=True):
+        with self.mouse_controller.pressed_at(x, y, relative=True, deadline=deadline):
             while time.monotonic() < deadline:
                 self.mouse_controller.validate()
                 now = time.monotonic()

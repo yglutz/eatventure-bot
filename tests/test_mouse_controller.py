@@ -55,6 +55,36 @@ class MouseTests(unittest.TestCase):
         self.assertTrue(self.mouse.hold_at(200, 500, duration=0, relative=False))
         self.assertEqual(self.backend.events, [("move", 200, 500), "down", "up"])
 
+    def test_optional_gesture_deadline_hook_cleared_after_up(self):
+        self.backend.set_gesture_deadline = lambda value: self.backend.events.append(("deadline", value))
+        with self.mouse.pressed_at(100, 300, deadline=123):
+            pass
+        self.assertEqual(self.backend.events[-4:], [("deadline", 123), "down", "up",
+                                                   ("deadline", None)])
+
+    def test_deadline_hook_cleanup_survives_interrupt_and_up_error(self):
+        self.backend.set_gesture_deadline = lambda value: self.backend.events.append(("deadline", value))
+        def failed_up():
+            self.backend.events.append("up")
+            raise RuntimeError("release failed")
+        self.backend.button_up = failed_up
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            with self.mouse.pressed_at(100, 300, deadline=123):
+                raise KeyboardInterrupt()
+        self.assertEqual(self.backend.events[-1], ("deadline", None))
+        self.assertIsNone(self.mouse._pressed_rect)
+
+    def test_deadline_set_failure_still_clears_hook(self):
+        def hook(value):
+            self.backend.events.append(("deadline", value))
+            if value is not None:
+                raise ValueError("invalid deadline")
+        self.backend.set_gesture_deadline = hook
+        with self.assertRaises(ValueError):
+            with self.mouse.pressed_at(100, 300, deadline=123):
+                self.fail("must not enter")
+        self.assertEqual(self.backend.events[-2:], ["up", ("deadline", None)])
+
     def test_forbidden_and_bounds_in_both_coordinate_systems(self):
         for x, y in [(290, 93), (350, 270), (0, 50), (280, 799),
                      (-0.1, 300), (400, 300), (100, 800), (float("nan"), 300)]:

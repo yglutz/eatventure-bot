@@ -3,7 +3,10 @@ import sys
 
 
 class WindowCapture:
-    def __init__(self, window_title, target_width=800, target_height=600):
+    def __init__(self, window_title=None, target_width=800, target_height=600, *, backend=None):
+        if backend is not None:
+            self.backend = backend
+            return
         if sys.platform == "win32":
             from windows_backend import WindowsBackend
             backend_type = WindowsBackend
@@ -13,6 +16,10 @@ class WindowCapture:
         else:
             raise RuntimeError("Unsupported desktop platform")
         self.backend = backend_type(window_title, target_width, target_height)
+
+    @property
+    def supports_overlay(self):
+        return type(self.backend).__module__ == 'windows_backend'
 
     @property
     def hwnd(self):

@@ -28,7 +28,8 @@ class ADBBackendTests(unittest.TestCase):
         self.assertEqual(argv[:3], [str(DEFAULT_ADB_PATH), "-s", "ZT5TIJLVAQH6LJ7T"])
         self.assertEqual(kwargs, dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      timeout=3, check=True, shell=False))
-        responses = {("shell", "dumpsys", "window", "windows"): self.focus,
+        responses = {("shell", "dumpsys", "window"): self.focus,
+                     ("shell", "dumpsys", "window", "windows"): b"mTopFocusedDisplayId=0\n",
                      ("shell", "dumpsys", "input"): self.rotation,
                      ("shell", "wm", "size"): self.size,
                      ("exec-out", "screencap", "-p"): self.png}
@@ -41,6 +42,41 @@ class ADBBackendTests(unittest.TestCase):
         self.assertEqual(result[0, 0].tolist(), [20, 40, 60])
         self.assertEqual(self.backend.last_capture_rect, (0, 0, 4, 8))
         self.assertEqual(self.run.call_count, 7)
+
+    def test_android13_focus_requires_full_window_query(self):
+        self.backend.package = "com.hwqgrhhjfd.idlefastfood"
+        self.focus = (
+            b"mTopFocusedDisplayId=0\n"
+            b"mCurrentFocus=Window{c31e15b u0 com.hwqgrhhjfd.idlefastfood/"
+            b"com.singular.unitybridge.SingularUnityActivity}\n"
+            b"mFocusedApp=ActivityRecord{123}\n mCurrentRotation=ROTATION_0\n")
+        self.assertEqual(self.backend.validate(), (0, 0, 4, 8))
+        self.assertEqual(self.run.call_args_list[0].args[0][3:],
+                         ["shell", "dumpsys", "window"])
+        for invalid in [self.focus * 2, self.focus.replace(
+                b"idlefastfood/", b"idlefastfood.other/")]:
+            self.focus = invalid
+            with self.assertRaises(RuntimeError):
+                self.backend.validate()
+
+    def test_command_diagnostic_is_sanitized_and_excludes_capture_bytes(self):
+        for stderr, expected in [
+                (b"error: device unauthorized.\nPlease check dialog", "unauthorized"),
+                (b"error: device offline", "device offline"),
+                (b"secret screenshot bytes\x1b[31m", "unrecognized stderr withheld")]:
+            with self.subTest(stderr=stderr):
+                self.run.side_effect = subprocess.CalledProcessError(
+                    1, "adb", output=b"secret screenshot bytes", stderr=stderr)
+                self.backend.last_capture_rect = (0, 0, 4, 8)
+                with self.assertRaises(RuntimeError) as caught:
+                    self.backend.capture()
+                message = str(caught.exception)
+                self.assertIn("ADB shell dumpsys window failed", message)
+                self.assertIn(expected, message)
+                self.assertNotIn("secret", message)
+                self.assertNotIn("\x1b", message)
+                self.assertTrue(caught.exception.__suppress_context__)
+                self.assertIsNone(self.backend.last_capture_rect)
 
     def test_input_is_unsupported_without_subprocess(self):
         for method, args in [("get_cursor_pos", ()), ("move_pointer", (1, 2)),
@@ -64,6 +100,35 @@ class ADBBackendTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.backend.capture()
             self.assertIsNone(self.backend.last_capture_rect)
+
+    def test_observed_window_rotation_without_input_orientation(self):
+        self.focus = (
+            b"  mTopFocusedDisplayId=0\n"
+            b"  mCurrentFocus=Window{ab12 u0 com.example.game/.MainActivity}\n"
+            b"      mCurrentRotation=ROTATION_0\n"
+            b"    isKeyguardShowing=false\n"
+            b"      screenState=SCREEN_STATE_ON\n"
+            b"      interactiveState=INTERACTIVE_STATE_AWAKE\n"
+            b"    mAwake=true mScreenOnEarly=true mScreenOnFully=true\n")
+        self.rotation = b"Input Reader State:\n  Device 0: touchscreen\n"
+        self.assertEqual(self.backend.capture().shape, (8, 4, 3))
+        for input_rotation, window_suffix in [
+                (b"SurfaceOrientation: 1\n", b""),
+                (b"SurfaceOrientation: unknown\n", b""),
+                (b"SurfaceOrientation: 0\nSurfaceOrientation: 0\n", b""),
+                (b"", b"mCurrentRotation=ROTATION_0\n"),
+                (b"", b"mCurrentRotation=ROTATION_1\n")]:
+            with self.subTest(input_rotation=input_rotation, suffix=window_suffix):
+                self.rotation = input_rotation
+                original = self.focus
+                self.focus += window_suffix
+                with self.assertRaises(RuntimeError):
+                    self.backend.capture()
+                self.focus = original
+        self.focus = self.focus.replace(b"ROTATION_0", b"ROTATION_1")
+        self.rotation = b"SurfaceOrientation: 0\n"
+        with self.assertRaises(RuntimeError):
+            self.backend.capture()
 
     def test_size_rejected(self):
         for size in [b"", b"Physical size: 24x12", b"Physical size: 12x24\nOverride size: 6x12",

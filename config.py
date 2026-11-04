@@ -1,4 +1,10 @@
 # Window Configuration
+AUTOMATION_BACKEND = 'auto'
+ADB_SERIAL = 'ZT5TIJLVAQH6LJ7T'
+ADB_PACKAGE = 'com.hwqgrhhjfd.idlefastfood'
+ADB_NATIVE_SIZE = (1080, 2400)
+# Candidate only: manually approve via adb_calibrate.py before enabling input.
+ADB_CROP = (0, 0, 1080, 2400)
 # WINDOW_TITLE: The exact title of the scrcpy window (visible at the top of the window)
 # To find it: Look at your scrcpy window's title bar, it usually shows your device model
 WINDOW_TITLE = "SM-M315F"
