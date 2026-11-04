@@ -5,7 +5,7 @@ import unittest
 import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 
 class PortableIntegrationTests(unittest.TestCase):
@@ -139,6 +139,66 @@ class PortableIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "paused"):
             self.bot._click(1, 2)
         self.bot.mouse_controller.click.assert_not_called()
+
+    def test_scroll_recaptures_after_drag_before_idle_click(self):
+        for direction in ('up', 'down'):
+            with self.subTest(direction=direction):
+                self.bot.failed_click_tracker = {}
+                self.bot.templates = {}
+                self.bot.scroll_direction = direction
+                self.bot.scroll_count = 0
+                self.bot.max_scroll_count = 5
+                self.bot.window_capture.capture.side_effect = lambda: MagicMock(size=1)
+                operations = Mock()
+                operations.attach_mock(self.bot.window_capture.capture, 'capture')
+                operations.attach_mock(self.bot.mouse_controller.drag, 'drag')
+                operations.attach_mock(self.bot.mouse_controller.click, 'click')
+
+                def drag(*args, **kwargs):
+                    self.bot.window_capture.backend.last_capture_rect = None
+                    return True
+
+                def capture():
+                    self.bot.window_capture.backend.last_capture_rect = (0, 0, 400, 800)
+                    return MagicMock(size=1)
+
+                self.bot.window_capture.capture.side_effect = capture
+                self.bot.mouse_controller.drag.side_effect = drag
+                self.bot.window_capture.backend.last_capture_rect = (0, 0, 400, 800)
+                result = self.bot.handle_scroll(None)
+
+                self.assertEqual(result, self.bot_module.State.FIND_RED_ICONS)
+                self.assertEqual([entry[0] for entry in operations.mock_calls],
+                                 ['click', 'capture', 'drag', 'capture', 'click'])
+                start = self.bot_module.config.SCROLL_START_POS
+                end = self.bot_module.config.SCROLL_END_POS
+                if direction == 'up':
+                    start, end = end, start
+                self.assertEqual(operations.mock_calls[2],
+                                 call.drag(*start, *end, duration=0.3, relative=True))
+                self.assertEqual(self.bot.scroll_count, 1)
+
+    def test_failed_scroll_drag_aborts_before_recapture_or_idle_click(self):
+        for direction in ('up', 'down'):
+            with self.subTest(direction=direction):
+                self.bot.failed_click_tracker = {}
+                self.bot.templates = {}
+                self.bot.scroll_direction = direction
+                self.bot.scroll_count = 0
+                self.bot.max_scroll_count = 5
+                self.bot.window_capture.capture.side_effect = lambda: MagicMock(size=1)
+                self.bot.mouse_controller.drag.return_value = False
+                operations = Mock()
+                operations.attach_mock(self.bot.window_capture.capture, 'capture')
+                operations.attach_mock(self.bot.mouse_controller.drag, 'drag')
+                operations.attach_mock(self.bot.mouse_controller.click, 'click')
+
+                with self.assertRaisesRegex(RuntimeError, 'Input failed'):
+                    self.bot.handle_scroll(None)
+
+                self.assertEqual([entry[0] for entry in operations.mock_calls],
+                                 ['click', 'capture', 'drag'])
+                self.assertEqual(self.bot.scroll_count, 0)
 
     def test_hold_cancellation_releases_without_followup_click(self):
         released = []

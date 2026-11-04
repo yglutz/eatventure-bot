@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from adb_backend import ADBBackend
 from adb_input import validate_interactive_state
+from mouse_controller import MouseController
 
 
 OBSERVED_WINDOW = (
@@ -69,6 +70,98 @@ class ADBInputTests(unittest.TestCase):
         self.backend.button_up()
         self.assertEqual(self.events, [["DOWN", "3", "5"], ["MOVE", "9", "19"],
                                        ["UP", "9", "19"]])
+
+    def test_drag_continues_past_capture_age_but_requires_next_capture(self):
+        now = time.monotonic()
+        with patch("adb_backend.time.monotonic", return_value=now):
+            self.down()
+        deadline = self.backend._gesture_deadline
+        original = self.command
+        clock = [now + 4.9]
+
+        def slow_command(argv, **kwargs):
+            result = original(argv, **kwargs)
+            clock[0] += .05
+            return result
+
+        self.run.side_effect = slow_command
+        with patch("adb_backend.time.monotonic", side_effect=lambda: clock[0]):
+            self.backend.move_pointer(1, 1)
+            self.backend.move_pointer(2, 2)
+            self.assertGreater(clock[0] - now, 5)
+            self.assertEqual(self.backend._gesture_deadline, deadline)
+            self.backend.button_up()
+            self.assertIsNone(self.backend.last_capture_rect)
+            with self.assertRaisesRegex(RuntimeError, "capture calibration"):
+                self.backend.button_down()
+        self.assertEqual([event[0] for event in self.events],
+                         ["DOWN", "MOVE", "MOVE", "UP"])
+
+    def test_admission_expiring_during_validation_refuses_down(self):
+        now = time.monotonic()
+        self.backend._capture_time = now - 4.9
+        clock = [now]
+        original = self.command
+
+        def slow_command(argv, **kwargs):
+            result = original(argv, **kwargs)
+            clock[0] += .05
+            return result
+
+        self.run.side_effect = slow_command
+        with patch("adb_backend.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(RuntimeError, "capture calibration"):
+                self.down()
+        self.assertEqual(self.events, [])
+
+    def test_calibration_mutation_during_move_validation_releases(self):
+        self.down()
+        original = self.command
+
+        def mutate(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[3:] == ["shell", "dumpsys", "power"]:
+                self.backend.crop = (0, 0, 8, 16)
+            return result
+
+        self.run.side_effect = mutate
+        with self.assertRaisesRegex(RuntimeError, "capture calibration"):
+            self.backend.move_pointer(1, 1)
+        self.assertEqual([event[0] for event in self.events], ["DOWN", "UP"])
+
+    def test_cancel_after_age_threshold_releases(self):
+        now = time.monotonic()
+        with patch("adb_backend.time.monotonic", return_value=now):
+            self.down()
+        self.cancel = True
+        with patch("adb_backend.time.monotonic", return_value=now + 6):
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                self.backend.move_pointer(1, 1)
+        self.assertEqual([event[0] for event in self.events], ["DOWN", "UP"])
+
+    def test_controller_multievent_drag_crosses_five_seconds(self):
+        self.backend.timeout = 2
+        clock = [time.monotonic()]
+        started = clock[0]
+        self.backend._capture_time = started
+        original = self.command
+
+        def slow_command(argv, **kwargs):
+            result = original(argv, **kwargs)
+            clock[0] += .025
+            return result
+
+        self.run.side_effect = slow_command
+        controller = MouseController(backend=self.backend, click_delay=0)
+        with patch("adb_backend.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("mouse_controller.time.sleep",
+                      side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            result = controller.drag(0, 0, 3, 7)
+        self.assertTrue(result, result.reason)
+        self.assertGreater(clock[0] - started, 5)
+        self.assertEqual([event[0] for event in self.events],
+                         ["DOWN"] + ["MOVE"] * 20 + ["UP"])
+        self.assertIsNone(self.backend.last_capture_rect)
 
     def test_observed_interactive_schema(self):
         validate_interactive_state(OBSERVED_WINDOW, OBSERVED_POWER)

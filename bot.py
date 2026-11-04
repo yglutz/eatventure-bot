@@ -632,6 +632,8 @@ class EatventureBot:
                 duration=0.3, relative=True
             )
         
+        # A completed drag invalidates capture authority on the ADB backend.
+        self._capture()
         self._click(config.IDLE_CLICK_POS[0], config.IDLE_CLICK_POS[1], relative=True)
         
         self.scroll_count += 1

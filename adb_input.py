@@ -81,17 +81,24 @@ class ExperimentalADBInput:
     def _signature(self):
         return (self.serial, self.package, self.native_size, self.crop, self.logical_size)
 
-    def _validate_input(self):
-        self._cancelled()
+    def _validate_capture_calibration(self):
+        # Image age gates admission, not continuation of a bounded gesture.
+        # MOVE still validates live device state and the original calibration.
         if (self.last_capture_rect is None or self._capture_signature != self._signature()
-                or time.monotonic() - self._capture_time > 5
+                or (not self._pressed and time.monotonic() - self._capture_time > 5)
                 or (self._pressed and self._gesture_signature != self._signature())):
             raise RuntimeError("ADB input requires fresh unchanged capture calibration")
+
+    def _validate_input(self):
+        self._cancelled()
+        self._validate_capture_calibration()
         self.validate(self.last_capture_rect)
         window = self._run("shell", "dumpsys", "window").decode("utf-8", "strict")
         power = self._run("shell", "dumpsys", "power").decode("utf-8", "strict")
         validate_interactive_state(window, power)
         self._cancelled()
+        # Validation itself can consume the remaining admission age budget.
+        self._validate_capture_calibration()
 
     def get_cursor_pos(self):
         """Return staged logical coordinates, NOT the physical/external pointer."""
@@ -123,6 +130,7 @@ class ExperimentalADBInput:
             self._pointer = (screen_x, screen_y)
             self._native_pointer = native
             if self._pressed:
+                self._gesture_moved = True  # MOVE may be delivered before failure.
                 self._event("MOVE")
                 self._cancelled()
         self._guarded(move)
@@ -136,6 +144,7 @@ class ExperimentalADBInput:
             self._validate_input()
             self._native_pointer = self._map_point(*self._pointer)
             self._gesture_signature = self._signature()
+            self._gesture_moved = False
             self._gesture_deadline = time.monotonic() + 10
             if self._requested_gesture_deadline is not None:
                 self._gesture_deadline = min(
@@ -163,5 +172,9 @@ class ExperimentalADBInput:
             self._input_fault = True
             raise
         finally:
+            if self._gesture_moved:
+                # A scroll changes the image even when geometry is unchanged.
+                # Require an explicit new capture before the next gesture.
+                self.last_capture_rect = None
             self._input_releasing = False
             self._input_deadline = deadline

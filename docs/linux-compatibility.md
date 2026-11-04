@@ -67,6 +67,14 @@ uv run --locked main.py --backend adb --enable-adb-input
 
 ### ADB input limitations
 
+Screenshot freshness (five seconds) is checked before admitting DOWN, including
+after its device-state validation. An active gesture continues checking live
+device state and unchanged calibration under its absolute deadline; it does not
+expire merely because the admission screenshot ages during MOVE commands.
+Moving gestures invalidate that screenshot on release. The scroll handler takes
+a new capture before its following idle click. Offline regressions cover this
+sequence; live scrolling still requires device validation.
+
 Input stages a logical point and maps it into the explicit native crop. Presses
 use independent `input touchscreen motionevent DOWN/MOVE/UP` commands, not a long
 uninterruptible swipe. Foreground package, rotation, dimensions, default display,
