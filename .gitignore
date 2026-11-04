@@ -35,3 +35,4 @@ wheels/
 logs/
 screenshots/
 *.log
+/platform-tools/
